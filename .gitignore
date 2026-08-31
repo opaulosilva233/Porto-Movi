@@ -1,0 +1,57 @@
+# Environment variables
+.env
+.env.backup
+.env.production
+.env.local
+.env.*.local
+
+# Database persistent volume local dumps/data
+db_data/
+*.sql
+*.sqlite
+
+# Backend / Composer / Laravel
+backend/vendor/
+backend/node_modules/
+backend/public/storage
+backend/public/hot
+backend/public/build
+backend/storage/*.key
+backend/storage/app/*
+!backend/storage/app/.gitignore
+backend/storage/framework/cache/*
+!backend/storage/framework/cache/.gitignore
+backend/storage/framework/sessions/*
+!backend/storage/framework/sessions/.gitignore
+backend/storage/framework/views/*
+!backend/storage/framework/views/.gitignore
+backend/storage/logs/*
+!backend/storage/logs/.gitignore
+backend/.phpunit.result.cache
+backend/.php-cs-fixer.cache
+
+# Frontend / Node / Vite / React
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.eslintcache
+frontend/*.tsbuildinfo
+frontend/*.local
+frontend/.turbo
+
+# Logs and debug
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS and Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
+.antigravity/
+.gemini/
