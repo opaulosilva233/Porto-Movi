@@ -1,260 +1,246 @@
-import { useState, useEffect } from 'react';
-import { api } from './services/api';
-import { ApiResponse, HealthCheckData } from './types';
-import { 
-  Server, 
-  Layers, 
-  Terminal, 
-  CheckCircle2, 
-  XCircle, 
-  RefreshCw, 
-  ExternalLink,
-  Code2,
-  ShieldCheck,
-  Cpu
-} from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BusFront, Crosshair, Moon, Navigation, RefreshCw, Route, Search, Sun, X } from 'lucide-react';
+import TransitMap, { type MapFit, type MapFocus, type MapViewState } from './components/TransitMap';
+import { getShapes, getVehicles } from './services/transit';
+import type { Vehicle } from './types';
+import { agoLabel, lineColor, lineTextColor } from './utils/stcp';
+
+const REFRESH_MS = 15_000;
+
+function movementLabel(speedKmh: number): string {
+  if (speedKmh < 1) return 'Parado';
+  if (speedKmh < 8) return 'Em marcha lenta';
+  return 'Em movimento';
+}
+
+function movementClass(speedKmh: number): string {
+  if (speedKmh < 1) return 'is-stopped';
+  if (speedKmh < 8) return 'is-slow';
+  return 'is-moving';
+}
+
+function directionLabel(directionId: number | null): string {
+  if (directionId === 0) return 'Ida';
+  if (directionId === 1) return 'Volta';
+  return 'Por confirmar';
+}
 
 export default function App() {
-  const [healthData, setHealthData] = useState<HealthCheckData | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [selected, setSelected] = useState<Vehicle | null>(null);
+  const [selectedLine, setSelectedLine] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lastChecked, setLastChecked] = useState<string>('');
+  const [stale, setStale] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [clock, setClock] = useState(Date.now());
+  const [focus, setFocus] = useState<MapFocus | null>(null);
+  const [fit, setFit] = useState<MapFit | null>(null);
+  const [routeShapes, setRouteShapes] = useState<Record<string, Array<[number, number]>>>({});
+  const [userPosition, setUserPosition] = useState<{ lat: number; lon: number } | null>(null);
+  const [locating, setLocating] = useState(false);
+  const currentViewRef = useRef<MapViewState>({ lat: 41.1579, lon: -8.6291, zoom: 13 });
+  const viewBeforeSelectionRef = useRef<MapViewState | null>(null);
+  const requestedShapesRef = useRef(new Set<string>());
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    const saved = localStorage.getItem('porto-movi:theme');
+    if (saved === 'dark' || saved === 'light') return saved;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
 
-  const checkHealth = async () => {
-    setIsLoading(true);
-    setError(null);
+  const refresh = useCallback(async (manual = false) => {
+    if (manual) setRefreshing(true);
     try {
-      const response = await api.get<ApiResponse<HealthCheckData>>('/health');
-      if (response.data.success && response.data.data) {
-        setHealthData(response.data.data);
-      } else {
-        setError(response.data.message || 'Erro inesperado na resposta da API');
-      }
-    } catch (err: unknown) {
-      if (err instanceof Error) {
-        setError(`Não foi possível conectar à API do backend (${err.message}). Certifique-se de que os containers Docker estão em execução.`);
-      } else {
-        setError('Erro ao conectar ao servidor backend.');
-      }
+      const result = await getVehicles();
+      setVehicles(result.payload.vehicles);
+      setUpdatedAt(result.payload.updatedAt);
+      setStale(result.payload.stale);
+      setError(result.ok ? null : result.message);
+      setSelected((current) => current ? result.payload.vehicles.find((vehicle) => vehicle.id === current.id) ?? current : null);
+    } catch {
+      setError('Não foi possível ligar ao serviço. Confirma se o backend está disponível.');
     } finally {
-      setIsLoading(false);
-      setLastChecked(new Date().toLocaleTimeString());
+      setLoading(false);
+      if (manual) window.setTimeout(() => setRefreshing(false), 450);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    checkHealth();
+    void refresh();
+    const refreshTimer = window.setInterval(() => void refresh(), REFRESH_MS);
+    const clockTimer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => { window.clearInterval(refreshTimer); window.clearInterval(clockTimer); };
+  }, [refresh]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+    localStorage.setItem('porto-movi:theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    const missing = [...new Set(vehicles.map((vehicle) => vehicle.shapeId).filter((id): id is string => Boolean(id)))]
+      .filter((id) => !requestedShapesRef.current.has(id));
+    if (missing.length === 0) return;
+    missing.forEach((id) => requestedShapesRef.current.add(id));
+    void getShapes(missing).then((shapes) => {
+      setRouteShapes((current) => {
+        const next = { ...current };
+        shapes.forEach((shape) => { next[shape.id] = shape.path; });
+        return next;
+      });
+    }).catch(() => missing.forEach((id) => requestedShapesRef.current.delete(id)));
+  }, [vehicles]);
+
+  const lines = useMemo(() => {
+    const counts = new Map<string, number>();
+    vehicles.forEach((vehicle) => counts.set(vehicle.line, (counts.get(vehicle.line) ?? 0) + 1));
+    return [...counts.entries()].map(([id, count]) => ({ id, count })).sort((a, b) => a.id.localeCompare(b.id, 'pt', { numeric: true }));
+  }, [vehicles]);
+
+  const searchResults = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return normalized ? lines.filter((line) => line.id.toLowerCase().includes(normalized)) : lines;
+  }, [lines, query]);
+
+  const visibleVehicles = useMemo(() => selectedLine ? vehicles.filter((vehicle) => vehicle.line === selectedLine) : vehicles, [selectedLine, vehicles]);
+  const updatedSeconds = updatedAt ? Math.max(0, Math.round((clock - new Date(updatedAt).getTime()) / 1000)) : 0;
+
+  const chooseVehicle = useCallback((vehicle: Vehicle) => {
+    if (!selected) viewBeforeSelectionRef.current = currentViewRef.current;
+    setSelected(vehicle);
+    setSelectedLine(vehicle.line);
+    setFit(null);
+    setFocus({ lat: vehicle.lat, lon: vehicle.lon, zoom: 16.5, key: Date.now() });
+  }, [selected]);
+
+  const chooseLine = useCallback((line: string) => {
+    setSelectedLine(line);
+    setSelected(null);
+    setSearchOpen(false);
+    setQuery('');
+    const buses = vehicles.filter((vehicle) => vehicle.line === line);
+    setFit({ points: buses.map((vehicle) => [vehicle.lat, vehicle.lon]), key: Date.now() });
+  }, [vehicles]);
+
+  const showWholeLine = useCallback((line: string) => {
+    const buses = vehicles.filter((vehicle) => vehicle.line === line);
+    setSelectedLine(line);
+    setFit({ points: buses.map((vehicle) => [vehicle.lat, vehicle.lon]), key: Date.now() });
+  }, [vehicles]);
+
+  const closeVehicle = useCallback(() => {
+    setSelected(null);
+    setSelectedLine(null);
+    setFit(null);
+    const previous = viewBeforeSelectionRef.current;
+    if (previous) setFocus({ ...previous, key: Date.now() });
+    viewBeforeSelectionRef.current = null;
+  }, []);
+
+  const locate = useCallback(() => {
+    if (!navigator.geolocation) { setError('A localização não é suportada neste dispositivo.'); return; }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const location = { lat: position.coords.latitude, lon: position.coords.longitude };
+        setUserPosition(location);
+        setFocus({ ...location, zoom: 16, key: Date.now() });
+        setLocating(false);
+      },
+      () => { setError('Não foi possível obter a tua localização. Verifica a permissão do browser.'); setLocating(false); },
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 30_000 },
+    );
   }, []);
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-slate-100 flex flex-col justify-between selection:bg-cyan-500 selection:text-slate-950">
-      {/* Top Navbar */}
-      <header className="border-b border-slate-800/80 bg-slate-950/60 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/20 font-bold text-slate-950">
-              <Layers className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <span className="font-bold text-base tracking-tight text-white">Starter Template</span>
-              <span className="text-xs ml-2 px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 font-mono border border-cyan-500/20">v1.0.0</span>
-            </div>
-          </div>
+    <main className="fixed inset-0 overflow-hidden bg-zinc-100 text-zinc-950 dark:bg-[#08101c] dark:text-white">
+      <TransitMap
+        vehicles={visibleVehicles}
+        selectedId={selected?.id ?? null}
+        theme={theme}
+        focus={focus}
+        fit={fit}
+        shapes={routeShapes}
+        userPosition={userPosition}
+        onSelect={chooseVehicle}
+        onViewChange={(view) => { currentViewRef.current = view; }}
+      />
 
-          <div className="flex items-center gap-2 text-xs font-mono">
-            <span className="hidden sm:inline-block text-slate-400">Decoupled Monorepo</span>
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
-              <Cpu className="w-3.5 h-3.5 text-cyan-400" /> Docker Ready
-            </span>
-          </div>
+      <header className="pointer-events-none absolute inset-x-0 top-0 z-[500] px-3 pt-[max(12px,env(safe-area-inset-top))] sm:px-5">
+        <div className="pointer-events-auto mx-auto flex max-w-xl items-center gap-2 rounded-[22px] border border-white/70 bg-white/95 p-2 shadow-[0_10px_35px_rgba(15,23,42,.16)] backdrop-blur-xl dark:border-white/10 dark:bg-[#101827]/95">
+          <button className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl px-2 py-1.5 text-left" onClick={() => setSearchOpen(true)}>
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-[#005BAC] text-white shadow-lg shadow-blue-700/20"><BusFront size={21} /></span>
+            <span className="min-w-0"><strong className="block truncate text-[15px] font-extrabold tracking-tight">Porto Movi</strong><span className="block truncate text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">Autocarros em tempo real</span></span>
+          </button>
+          <button className="icon-button" aria-label="Pesquisar linha" onClick={() => setSearchOpen(true)}><Search size={19} /></button>
+          <button className="icon-button" aria-label="Alternar tema" onClick={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={19} /> : <Moon size={19} />}</button>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="max-w-6xl mx-auto px-4 py-12 flex-1 w-full space-y-10">
-        {/* Hero Section */}
-        <section className="text-center space-y-4 max-w-3xl mx-auto">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-950/60 border border-cyan-800 text-cyan-300 text-xs font-medium mb-2">
-            <ShieldCheck className="w-4 h-4 text-cyan-400" />
-            Template Base Pronto para Novos Projetos Web
+      <div className="pointer-events-none absolute inset-x-0 top-[92px] z-[490] flex justify-center px-4 pt-[env(safe-area-inset-top)]">
+        {loading ? <div className="status-pill"><RefreshCw className="animate-spin" size={12} /> A ligar à rede STCP</div> : error ? <button className="pointer-events-auto status-pill !bg-rose-600 !text-white" onClick={() => void refresh(true)}>{error}</button> : <div className="status-pill"><i className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> {vehicles.length} em circulação · {agoLabel(updatedSeconds)}</div>}
+      </div>
+
+      <div className="absolute right-3 z-[500] flex flex-col gap-2 sm:right-5" style={{ bottom: selected ? 286 : 76 }}>
+        <button className="map-action" aria-label="Usar a minha localização" onClick={locate}><Crosshair className={locating ? 'animate-pulse' : ''} size={20} /></button>
+        <button className="map-action" aria-label="Atualizar posições" onClick={() => void refresh(true)}><RefreshCw className={refreshing ? 'animate-spin' : ''} size={19} /></button>
+      </div>
+
+      {selected && (
+        <section className="absolute inset-x-3 bottom-[72px] z-[510] mx-auto max-w-md rounded-[22px] border border-black/5 bg-white p-3 shadow-2xl dark:border-white/10 dark:bg-[#101725]">
+          <div className="flex items-center gap-3">
+            <span className="grid h-12 min-w-14 place-items-center rounded-2xl text-lg font-black shadow-sm" style={{ backgroundColor: lineColor(selected.line), color: lineTextColor(selected.line) }}>{selected.line}</span>
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-extrabold uppercase tracking-[.14em] text-zinc-400">Viatura {selected.id}</p>
+              <h2 className="truncate text-base font-extrabold">Linha {selected.line}</h2>
+            </div>
+            <button className="icon-button !h-9 !w-9" aria-label="Fechar e regressar ao mapa anterior" onClick={closeVehicle}><X size={17} /></button>
           </div>
-          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent">
-            Desenvolvimento Web Desacoplado & de Alto Desempenho
-          </h1>
-          <p className="text-base text-slate-400 leading-relaxed">
-            Ambiente completo orquestrado via Docker com <strong className="text-slate-200">Laravel 11 API</strong> no backend, <strong className="text-slate-200">React + Vite + TypeScript</strong> no frontend e base de dados <strong className="text-slate-200">MySQL 8.0</strong>.
-          </p>
-        </section>
-
-        {/* Live System Status Card */}
-        <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-sm space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
-            <div>
-              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-                <Server className="w-5 h-5 text-cyan-400" />
-                Diagnóstico & Conectividade do Ambiente
-              </h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Verificação em tempo real da comunicação entre Frontend (Vite), Backend (Nginx/PHP) e Base de Dados (MySQL).
-              </p>
+          <div className="mt-2 grid grid-cols-[1.2fr_.85fr_1.25fr] gap-1.5">
+            <div className="flex min-w-0 items-center gap-2 rounded-xl bg-zinc-100 px-2.5 py-2 dark:bg-white/5">
+              <span className={`motion-dot ${movementClass(selected.speedKmh)}`} aria-hidden="true" />
+              <div className="min-w-0"><span className="block text-[9px] font-bold uppercase tracking-wide text-zinc-400">Estado</span><strong className="mt-0.5 block truncate text-[11px]">{movementLabel(selected.speedKmh)}</strong></div>
             </div>
-            <button
-              onClick={checkHealth}
-              disabled={isLoading}
-              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-800 text-white font-medium text-xs transition-colors shadow-md shadow-cyan-600/20 cursor-pointer"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-              {isLoading ? 'Verificando...' : 'Re-testar Conexão'}
-            </button>
+            <div className="rounded-xl bg-zinc-100 px-2 py-2 dark:bg-white/5"><span className="block text-[9px] font-bold uppercase tracking-wide text-zinc-400">Velocidade</span><strong className="mt-0.5 block text-[12px] tabular-nums">{Math.round(selected.speedKmh)} <small className="text-[9px] font-bold text-zinc-400">km/h</small></strong></div>
+            <div className="rounded-xl bg-zinc-100 px-2 py-2 dark:bg-white/5"><span className="block text-[9px] font-bold uppercase tracking-wide text-zinc-400">Destino</span><strong className="mt-0.5 block truncate text-[11px]" title={selected.headsign ?? undefined}>{selected.headsign ?? directionLabel(selected.directionId)}</strong></div>
           </div>
-
-          {/* Status Metrics */}
-          {error ? (
-            <div className="p-4 rounded-xl bg-red-950/40 border border-red-800/80 text-red-300 flex items-start gap-3">
-              <XCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <div className="font-semibold text-sm">Falha de Comunicação com o Backend</div>
-                <div className="text-xs text-red-400/90">{error}</div>
-                <div className="text-xs text-slate-400 mt-2 font-mono">
-                  Dica: Execute <code className="text-cyan-300">make setup</code> ou <code className="text-cyan-300">make logs</code> no terminal.
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {/* Frontend Card */}
-              <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-slate-400">Frontend SPA</span>
-                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-950/50 px-2 py-0.5 rounded border border-emerald-800/50">
-                    <CheckCircle2 className="w-3 h-3" /> Ativo
-                  </span>
-                </div>
-                <div className="text-sm font-semibold text-white">React 18 + Vite + TS</div>
-                <div className="text-xs text-slate-500 font-mono">Porta: 5173 (Host)</div>
-              </div>
-
-              {/* Backend Card */}
-              <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-slate-400">Backend API</span>
-                  {healthData ? (
-                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-950/50 px-2 py-0.5 rounded border border-emerald-800/50">
-                      <CheckCircle2 className="w-3 h-3" /> Online
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-400 bg-amber-950/50 px-2 py-0.5 rounded border border-amber-800/50">
-                      Aguardando...
-                    </span>
-                  )}
-                </div>
-                <div className="text-sm font-semibold text-white">
-                  Laravel {healthData?.app.laravel_version || '11'} (PHP {healthData?.app.php_version?.split('-')[0] || '8.3'})
-                </div>
-                <div className="text-xs text-slate-500 font-mono">Porta: 8000 (Nginx)</div>
-              </div>
-
-              {/* Database Card */}
-              <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-slate-400">Base de Dados</span>
-                  {healthData?.database.status === 'healthy' ? (
-                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-950/50 px-2 py-0.5 rounded border border-emerald-800/50">
-                      <CheckCircle2 className="w-3 h-3" /> Conectado
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-400 bg-amber-950/50 px-2 py-0.5 rounded border border-amber-800/50">
-                      Aguardando
-                    </span>
-                  )}
-                </div>
-                <div className="text-sm font-semibold text-white">MySQL 8.0</div>
-                <div className="text-xs text-slate-500 font-mono">Porta: 3306 (Host)</div>
-              </div>
-            </div>
-          )}
-
-          {lastChecked && (
-            <div className="text-[11px] text-slate-500 text-right font-mono">
-              Última verificação: {lastChecked}
-            </div>
-          )}
-        </section>
-
-        {/* Quick Start & Makefile Commands */}
-        <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Makefile Cheatsheet */}
-          <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 space-y-4">
-            <h3 className="text-base font-semibold text-white flex items-center gap-2">
-              <Terminal className="w-4 h-4 text-cyan-400" />
-              Comandos Essenciais do Makefile
-            </h3>
-            <div className="space-y-2 font-mono text-xs">
-              <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex justify-between items-center">
-                <span className="text-cyan-400">make setup</span>
-                <span className="text-slate-400">Inicializa todo o ambiente do zero</span>
-              </div>
-              <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex justify-between items-center">
-                <span className="text-cyan-400">make up / make down</span>
-                <span className="text-slate-400">Inicia ou encerra os containers</span>
-              </div>
-              <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex justify-between items-center">
-                <span className="text-cyan-400">make test</span>
-                <span className="text-slate-400">Executa testes (Backend + Frontend)</span>
-              </div>
-              <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex justify-between items-center">
-                <span className="text-cyan-400">make lint</span>
-                <span className="text-slate-400">Analisa estilo de código (Pint / ESLint)</span>
-              </div>
-              <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex justify-between items-center">
-                <span className="text-cyan-400">make shell</span>
-                <span className="text-slate-400">Abre terminal no container Laravel</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Architecture Guidelines */}
-          <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 space-y-4">
-            <h3 className="text-base font-semibold text-white flex items-center gap-2">
-              <Code2 className="w-4 h-4 text-cyan-400" />
-              Estrutura & Boas Práticas
-            </h3>
-            <ul className="space-y-2.5 text-xs text-slate-300">
-              <li className="flex items-start gap-2">
-                <span className="text-cyan-400 font-bold">•</span>
-                <span><strong>API First:</strong> Backend em Laravel retorna exclusivamente respostas JSON estruturadas.</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-cyan-400 font-bold">•</span>
-                <span><strong>Strict Types:</strong> Todo ficheiro PHP deve conter <code>declare(strict_types=1);</code>.</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-cyan-400 font-bold">•</span>
-                <span><strong>Form Requests & Resources:</strong> Validações e transformações desacopladas dos Controllers.</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-cyan-400 font-bold">•</span>
-                <span><strong>Componentização:</strong> React funcional com TypeScript, Tailwind CSS e Axios centralizado.</span>
-              </li>
-            </ul>
-            <div className="pt-2">
-              <a
-                href="http://localhost:8000/api/health"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 transition-colors font-medium"
-              >
-                Abrir JSON de Healthcheck da API <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
+          <p className="mt-1.5 text-center text-[10px] font-semibold text-zinc-400">Posição atualizada {agoLabel(selected.ageSec)} · {new Date(selected.observedAt).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</p>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <button className="flex items-center justify-center gap-1.5 rounded-xl bg-zinc-100 py-2 text-[11px] font-extrabold dark:bg-white/10" onClick={() => setFocus({ lat: selected.lat, lon: selected.lon, zoom: 17, key: Date.now() })}><Navigation size={13} /> Centrar</button>
+            <button className="flex items-center justify-center gap-1.5 rounded-xl bg-[#005BAC] py-2 text-[11px] font-extrabold text-white" onClick={() => showWholeLine(selected.line)}><Route size={13} /> Ver linha completa</button>
           </div>
         </section>
-      </main>
+      )}
 
-      {/* Footer */}
-      <footer className="border-t border-slate-800/80 bg-slate-950/60 py-6 text-center text-xs text-slate-500">
-        <p>Starter Template para Novos Projetos Web • Licença MIT</p>
-      </footer>
-    </div>
+      <section className="filter-dock absolute inset-x-2 bottom-2 z-[500] h-14 overflow-hidden rounded-2xl border border-black/5 bg-white/95 px-2 shadow-xl backdrop-blur-lg dark:border-white/10 dark:bg-[#101725]/95">
+        <div className="flex h-full items-center gap-2">
+          <span className="hidden shrink-0 pl-2 text-[11px] font-extrabold text-zinc-500 sm:block">Filtrar por:</span>
+          <div className="no-scrollbar flex min-w-0 flex-1 gap-1.5 overflow-x-auto py-2">
+            <button className={`shrink-0 rounded-full px-3 py-1.5 text-[11px] font-extrabold transition ${selectedLine === null ? 'bg-zinc-800 text-white dark:bg-white dark:text-zinc-900' : 'bg-zinc-100 text-zinc-600 dark:bg-white/10 dark:text-zinc-300'}`} onClick={() => { setSelected(null); setSelectedLine(null); setFit(null); }}>Todas</button>
+            {lines.map((line) => <button key={line.id} className={`shrink-0 rounded-full px-3 py-1.5 text-[11px] font-black shadow-sm transition active:scale-95 ${selectedLine === line.id ? 'ring-2 ring-white ring-offset-2 ring-offset-zinc-400 dark:ring-offset-zinc-800' : ''}`} style={{ backgroundColor: lineColor(line.id), color: lineTextColor(line.id) }} onClick={() => chooseLine(line.id)}>{line.id}</button>)}
+          </div>
+          <span className="shrink-0 pr-1 text-[10px] font-bold text-zinc-400">{visibleVehicles.length}</span>
+        </div>
+      </section>
+
+      {searchOpen && (
+        <div className="absolute inset-0 z-[1000] overflow-y-auto bg-zinc-100/98 px-4 pb-10 pt-[max(18px,env(safe-area-inset-top))] backdrop-blur-xl dark:bg-[#08101c]/98">
+          <div className="mx-auto min-h-full max-w-xl">
+            <div className="flex items-center gap-2">
+              <label className="flex h-14 flex-1 items-center gap-3 rounded-2xl bg-white px-4 shadow-sm dark:bg-white/10"><Search className="text-[#005BAC]" size={20} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Pesquisar linha, ex. 500" className="min-w-0 flex-1 bg-transparent text-base font-bold outline-none placeholder:text-zinc-400" />{query && <button aria-label="Limpar pesquisa" onClick={() => setQuery('')}><X size={18} /></button>}</label>
+              <button className="icon-button !h-14 !w-14 !bg-white dark:!bg-white/10" aria-label="Fechar pesquisa" onClick={() => setSearchOpen(false)}><X size={21} /></button>
+            </div>
+            <p className="mb-3 mt-7 text-xs font-extrabold uppercase tracking-[.14em] text-zinc-400">Linhas atualmente em circulação</p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{searchResults.map((line) => <button key={line.id} className="flex items-center gap-3 rounded-2xl bg-white p-3 text-left shadow-sm transition active:scale-[.98] dark:bg-white/10" onClick={() => chooseLine(line.id)}><span className="grid h-11 min-w-12 place-items-center rounded-xl font-black" style={{ backgroundColor: lineColor(line.id), color: lineTextColor(line.id) }}>{line.id}</span><span><strong className="block text-sm">Linha {line.id}</strong><small className="text-zinc-500 dark:text-zinc-400">{line.count} em circulação</small></span></button>)}</div>
+            {!loading && searchResults.length === 0 && <p className="rounded-2xl bg-white p-6 text-center text-sm font-semibold text-zinc-500 dark:bg-white/10">Nenhuma linha ativa corresponde à pesquisa.</p>}
+          </div>
+        </div>
+      )}
+
+      {stale && <div className="absolute bottom-[70px] left-3 z-[510] rounded-full bg-amber-400 px-3 py-1.5 text-[11px] font-extrabold text-amber-950">A mostrar a última atualização válida</div>}
+    </main>
   );
 }
