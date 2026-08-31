@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import 'leaflet/dist/leaflet.css';
 import type * as Leaflet from 'leaflet';
-import type { Vehicle } from '../types';
+import type { StopInfo, Vehicle } from '../types';
 import { lineColor, lineTextColor } from '../utils/stcp';
 
 interface MapFocus {
@@ -24,13 +24,20 @@ interface MapViewState {
 
 interface Props {
   vehicles: Vehicle[];
+  stops: StopInfo[];
+  mode: 'buses' | 'stops';
   selectedId: string | null;
+  selectedStopId: string | null;
   theme: 'light' | 'dark';
   focus: MapFocus | null;
   fit: MapFit | null;
   shapes: Record<string, Array<[number, number]>>;
+  routePath: Array<[number, number]>;
+  routeStops: StopInfo[];
+  routeLine: string | null;
   userPosition: { lat: number; lon: number } | null;
   onSelect: (vehicle: Vehicle) => void;
+  onStopSelect: (stop: StopInfo) => void;
   onViewChange: (view: MapViewState) => void;
 }
 
@@ -39,6 +46,8 @@ interface MapKit {
   map: Leaflet.Map;
   tiles: Leaflet.TileLayer;
   vehicles: Leaflet.LayerGroup;
+  stops: Leaflet.LayerGroup;
+  route: Leaflet.LayerGroup;
   busMarkers: Map<string, Leaflet.Marker>;
   busAnimations: Map<string, number>;
   user: Leaflet.Marker | null;
@@ -132,18 +141,45 @@ function vehicleIcon(leaflet: typeof Leaflet, vehicle: Vehicle, selected: boolea
   });
 }
 
-export default function TransitMap({ vehicles, selectedId, theme, focus, fit, shapes, userPosition, onSelect, onViewChange }: Props) {
+function stopIcon(leaflet: typeof Leaflet, selected: boolean): Leaflet.DivIcon {
+  return leaflet.divIcon({
+    className: 'stop-marker-wrap',
+    html: `<div class="stop-marker${selected ? ' is-selected' : ''}" aria-hidden="true">
+      <svg viewBox="0 0 30 42">
+        <path d="M15 28v11" stroke="#D6E9FA" stroke-width="3" stroke-linecap="round"/>
+        <path d="M10 40h10" stroke="#D6E9FA" stroke-width="3" stroke-linecap="round"/>
+        <rect x="3" y="2" width="24" height="28" rx="7" fill="#005BAC" stroke="#fff" stroke-width="2.2"/>
+        <path d="M9 11.5c0-2 1.5-3.5 3.5-3.5h5c2 0 3.5 1.5 3.5 3.5v8.8H9v-8.8Z" fill="#fff"/>
+        <path d="M11 12h8v4h-8z" fill="#005BAC"/>
+        <circle cx="11.5" cy="20.3" r="1.8" fill="#fff" stroke="#005BAC" stroke-width="1.2"/>
+        <circle cx="18.5" cy="20.3" r="1.8" fill="#fff" stroke="#005BAC" stroke-width="1.2"/>
+      </svg>
+    </div>`,
+    iconSize: selected ? [38, 52] : [30, 42],
+    iconAnchor: selected ? [19, 48] : [15, 39],
+  });
+}
+
+export default function TransitMap({ vehicles, stops, mode, selectedId, selectedStopId, theme, focus, fit, shapes, routePath, routeStops, routeLine, userPosition, onSelect, onStopSelect, onViewChange }: Props) {
   const elementRef = useRef<HTMLDivElement>(null);
   const kitRef = useRef<MapKit | null>(null);
   const onSelectRef = useRef(onSelect);
+  const onStopSelectRef = useRef(onStopSelect);
   const onViewChangeRef = useRef(onViewChange);
   const initialThemeRef = useRef(theme);
   const vehiclesRef = useRef(vehicles);
   const selectedIdRef = useRef(selectedId);
+  const stopsRef = useRef(stops);
+  const modeRef = useRef(mode);
+  const selectedStopIdRef = useRef(selectedStopId);
   onSelectRef.current = onSelect;
+  onStopSelectRef.current = onStopSelect;
   onViewChangeRef.current = onViewChange;
   vehiclesRef.current = vehicles;
   selectedIdRef.current = selectedId;
+  stopsRef.current = stops;
+  modeRef.current = mode;
+  selectedStopIdRef.current = selectedStopId;
 
   useEffect(() => {
     let disposed = false;
@@ -163,8 +199,10 @@ export default function TransitMap({ vehicles, selectedId, theme, focus, fit, sh
       reportView();
       elementRef.current.dataset.theme = initialThemeRef.current;
       const vehicleLayer = leaflet.layerGroup().addTo(map);
+      const routeLayer = leaflet.layerGroup().addTo(map);
+      const stopLayer = leaflet.layerGroup().addTo(map);
       const busMarkers = new Map<string, Leaflet.Marker>();
-      kitRef.current = { leaflet, map, tiles, vehicles: vehicleLayer, busMarkers, busAnimations: new Map(), user: null };
+      kitRef.current = { leaflet, map, tiles, vehicles: vehicleLayer, stops: stopLayer, route: routeLayer, busMarkers, busAnimations: new Map(), user: null };
       vehiclesRef.current.forEach((vehicle) => {
         const marker = leaflet.marker([vehicle.lat, vehicle.lon], { icon: vehicleIcon(leaflet, vehicle, vehicle.id === selectedIdRef.current), keyboard: true });
         marker.on('click', () => onSelectRef.current(vehicle));
@@ -220,6 +258,85 @@ export default function TransitMap({ vehicles, selectedId, theme, focus, fit, sh
       }
     });
   }, [vehicles, selectedId, shapes]);
+
+  useEffect(() => {
+    const kit = kitRef.current;
+    if (!kit) return;
+    const drawStops = () => {
+      kit.stops.clearLayers();
+      if (mode !== 'stops') return;
+      if (routeStops.length > 0) {
+        routeStops.forEach((stop) => {
+          const selected = stop.id === selectedStopId;
+          kit.leaflet.marker([stop.lat, stop.lon], {
+            icon: stopIcon(kit.leaflet, selected),
+            keyboard: true,
+            zIndexOffset: selected ? 1200 : 300,
+          }).on('click', () => onStopSelectRef.current(stop)).addTo(kit.stops);
+        });
+        return;
+      }
+      const selectedStop = selectedStopId ? stops.find((stop) => stop.id === selectedStopId) : null;
+      if (selectedStop) {
+        kit.leaflet.marker([selectedStop.lat, selectedStop.lon], {
+          icon: stopIcon(kit.leaflet, true),
+          keyboard: true,
+          zIndexOffset: 1200,
+        }).on('click', () => onStopSelectRef.current(selectedStop)).addTo(kit.stops);
+        return;
+      }
+      if (kit.map.getZoom() < 13) return;
+      const bounds = kit.map.getBounds().pad(0.18);
+      const center = kit.map.getCenter();
+      const zoom = kit.map.getZoom();
+      const limit = zoom < 14 ? 55 : zoom < 15 ? 110 : zoom < 16 ? 180 : 260;
+      stops
+        .filter((stop) => bounds.contains([stop.lat, stop.lon]))
+        .sort((first, second) => {
+          const firstDistance = (first.lat - center.lat) ** 2 + (first.lon - center.lng) ** 2;
+          const secondDistance = (second.lat - center.lat) ** 2 + (second.lon - center.lng) ** 2;
+          return firstDistance - secondDistance;
+        })
+        .slice(0, limit)
+        .forEach((stop) => {
+        const marker = kit.leaflet.marker([stop.lat, stop.lon], {
+          icon: stopIcon(kit.leaflet, false),
+          keyboard: true,
+        });
+        marker.on('click', () => onStopSelectRef.current(stop));
+        marker.addTo(kit.stops);
+        });
+    };
+    drawStops();
+    kit.map.on('zoomend', drawStops);
+    kit.map.on('moveend', drawStops);
+    return () => {
+      kit.map.off('zoomend', drawStops);
+      kit.map.off('moveend', drawStops);
+      kit.stops.clearLayers();
+    };
+  }, [mode, routeStops, selectedStopId, stops]);
+
+  useEffect(() => {
+    const kit = kitRef.current;
+    if (!kit) return;
+    kit.route.clearLayers();
+    if (routePath.length < 2 || !routeLine) return;
+    kit.leaflet.polyline(routePath, {
+      color: '#ffffff',
+      weight: 8,
+      opacity: theme === 'dark' ? 0.34 : 0.78,
+      lineCap: 'round',
+      lineJoin: 'round',
+    }).addTo(kit.route);
+    kit.leaflet.polyline(routePath, {
+      color: lineColor(routeLine),
+      weight: 5,
+      opacity: 0.95,
+      lineCap: 'round',
+      lineJoin: 'round',
+    }).addTo(kit.route);
+  }, [routeLine, routePath, theme]);
 
   useEffect(() => {
     const kit = kitRef.current;

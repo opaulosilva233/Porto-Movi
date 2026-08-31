@@ -47,3 +47,55 @@ export interface VehiclesPayload {
   source: 'fiware';
   vehicles: Vehicle[];
 }
+
+export interface StopInfo {
+  id: string;
+  code: string;
+  name: string;
+  lat: number;
+  lon: number;
+}
+
+export interface Arrival {
+  vehicleId: string;
+  line: string;
+  headsign: string | null;
+  directionId: number | null;
+  shapeId: string | null;
+  lat: number;
+  lon: number;
+  speedKmh: number;
+  distanceM: number;
+  etaSeconds: number;
+  atStop: boolean;
+}
+
+export interface ArrivalsPayload {
+  stop: StopInfo;
+  updatedAt: string;
+  realtime: boolean;
+  arrivals: Arrival[];
+}
+
+export interface ScheduleItem {
+  line: string;
+  headsign: string | null;
+  directionId: number | null;
+  times: string[];
+}
+
+export interface SchedulePayload {
+  stop: StopInfo;
+  date: string;
+  schedule: ScheduleItem[];
+}
+
+export interface PatternRoutePayload {
+  pattern: string;
+  line: string;
+  headsign: string | null;
+  directionId: number | null;
+  shapeId: string;
+  path: Array<[number, number]>;
+  stops: Array<StopInfo & { shapeDistance: number }>;
+}

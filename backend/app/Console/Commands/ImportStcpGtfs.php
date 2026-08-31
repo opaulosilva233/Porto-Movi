@@ -8,6 +8,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use RuntimeException;
 use SplFileObject;
 use ZipArchive;
@@ -16,21 +17,19 @@ final class ImportStcpGtfs extends Command
 {
     protected $signature = 'stcp:import-gtfs {--url= : URL alternativa do ZIP GTFS}';
 
-    protected $description = 'Importa destinos e traçados do GTFS oficial da STCP';
+    protected $description = 'Importa linhas, destinos, traçados, paragens e horários do GTFS oficial da STCP';
 
     public function handle(): int
     {
         $url = (string) ($this->option('url') ?: config('stcp.gtfs_url'));
         $directory = storage_path('app/private/stcp-gtfs-import');
         $zipPath = $directory.'/feed.zip';
-
         if (! is_dir($directory) && ! mkdir($directory, 0755, true) && ! is_dir($directory)) {
             throw new RuntimeException('Não foi possível criar o diretório temporário GTFS.');
         }
 
         $this->components->info('A descarregar o GTFS oficial…');
         Http::connectTimeout(10)->timeout(120)->sink($zipPath)->get($url)->throw();
-
         $zip = new ZipArchive;
         if ($zip->open($zipPath) !== true) {
             throw new RuntimeException('O ficheiro GTFS descarregado não é um ZIP válido.');
@@ -47,6 +46,8 @@ final class ImportStcpGtfs extends Command
         }
 
         $patterns = [];
+        $trips = [];
+        $tripPatterns = [];
         foreach ($this->rows($directory.'/trips.txt') as $row) {
             $tripId = trim((string) ($row['trip_id'] ?? ''));
             $routeId = trim((string) ($row['route_id'] ?? ''));
@@ -54,24 +55,54 @@ final class ImportStcpGtfs extends Command
                 continue;
             }
             $pattern = trim(explode('|', $tripId)[0] ?? $tripId);
-            if ($pattern === '' || isset($patterns[$pattern])) {
-                continue;
-            }
-            $patterns[$pattern] = [
+            $tripPatterns[$tripId] = $pattern;
+            $trip = [
+                'id' => $tripId,
                 'pattern' => $pattern,
                 'line' => $routes[$routeId] ?? $routeId,
+                'service_id' => trim((string) ($row['service_id'] ?? '')),
                 'headsign' => trim((string) ($row['trip_headsign'] ?? '')) ?: null,
                 'direction_id' => isset($row['direction_id']) && $row['direction_id'] !== '' ? (int) $row['direction_id'] : null,
                 'shape_id' => trim((string) ($row['shape_id'] ?? '')) ?: null,
             ];
+            $trips[] = $trip;
+            $patterns[$pattern] ??= [
+                'pattern' => $pattern,
+                'line' => $trip['line'],
+                'headsign' => $trip['headsign'],
+                'direction_id' => $trip['direction_id'],
+                'shape_id' => $trip['shape_id'],
+            ];
         }
 
-        $this->components->info('A importar destinos e sentidos…');
-        DB::transaction(function () use ($patterns): void {
-            DB::table('stcp_trip_patterns')->delete();
-            foreach (array_chunk(array_values($patterns), 1000) as $chunk) {
-                DB::table('stcp_trip_patterns')->insert($chunk);
+        $stops = [];
+        foreach ($this->rows($directory.'/stops.txt') as $row) {
+            $id = trim((string) ($row['stop_id'] ?? ''));
+            $name = trim((string) ($row['stop_name'] ?? ''));
+            if ($id === '' || $id === '.' || $name === '' || $name === '.') {
+                continue;
             }
+            $stops[] = [
+                'id' => $id,
+                'code' => trim((string) ($row['stop_code'] ?? '')) ?: $id,
+                'name' => $name,
+                'name_normalized' => Str::lower(Str::ascii($name)),
+                'lat' => (float) ($row['stop_lat'] ?? 0),
+                'lon' => (float) ($row['stop_lon'] ?? 0),
+            ];
+        }
+
+        $this->components->info('A importar paragens, viagens e destinos…');
+        DB::transaction(function () use ($patterns, $trips, $stops): void {
+            DB::table('stcp_stop_patterns')->delete();
+            DB::table('stcp_stop_times')->delete();
+            DB::table('stcp_service_dates')->delete();
+            DB::table('stcp_trips')->delete();
+            DB::table('stcp_stops')->delete();
+            DB::table('stcp_trip_patterns')->delete();
+            $this->insertChunks('stcp_trip_patterns', array_values($patterns));
+            $this->insertChunks('stcp_trips', $trips);
+            $this->insertChunks('stcp_stops', $stops);
         });
 
         $this->components->info('A importar os traçados oficiais…');
@@ -97,16 +128,76 @@ final class ImportStcpGtfs extends Command
             $shapeCount++;
         }
 
+        $this->components->info('A importar horários e ligações às paragens…');
+        $stopTimeChunk = [];
+        $stopPatternDistances = [];
+        $stopTimeCount = 0;
+        foreach ($this->rows($directory.'/stop_times.txt') as $row) {
+            $tripId = trim((string) ($row['trip_id'] ?? ''));
+            $stopId = trim((string) ($row['stop_id'] ?? ''));
+            if ($tripId === '' || $stopId === '') {
+                continue;
+            }
+            $distance = isset($row['shape_dist_traveled']) && $row['shape_dist_traveled'] !== ''
+                ? (float) $row['shape_dist_traveled']
+                : 0.0;
+            $stopTimeChunk[] = [
+                'trip_id' => $tripId,
+                'stop_id' => $stopId,
+                'arrival' => trim((string) ($row['arrival_time'] ?? '00:00:00')),
+                'departure' => trim((string) ($row['departure_time'] ?? '00:00:00')),
+                'sequence' => (int) ($row['stop_sequence'] ?? 0),
+                'shape_distance' => $distance,
+            ];
+            $pattern = $tripPatterns[$tripId] ?? null;
+            if ($pattern !== null) {
+                $key = $stopId.'|'.$pattern;
+                if (! isset($stopPatternDistances[$key]) || $distance < $stopPatternDistances[$key]['shape_distance']) {
+                    $stopPatternDistances[$key] = ['stop_id' => $stopId, 'pattern' => $pattern, 'shape_distance' => $distance];
+                }
+            }
+            if (count($stopTimeChunk) >= 1000) {
+                DB::table('stcp_stop_times')->insert($stopTimeChunk);
+                $stopTimeCount += count($stopTimeChunk);
+                $stopTimeChunk = [];
+            }
+        }
+        if ($stopTimeChunk !== []) {
+            DB::table('stcp_stop_times')->insert($stopTimeChunk);
+            $stopTimeCount += count($stopTimeChunk);
+        }
+        $this->insertChunks('stcp_stop_patterns', array_values($stopPatternDistances));
+
+        $serviceDates = [];
+        foreach ($this->rows($directory.'/calendar_dates.txt') as $row) {
+            $rawDate = trim((string) ($row['date'] ?? ''));
+            if (strlen($rawDate) !== 8) {
+                continue;
+            }
+            $serviceDates[] = [
+                'service_id' => trim((string) ($row['service_id'] ?? '')),
+                'service_date' => substr($rawDate, 0, 4).'-'.substr($rawDate, 4, 2).'-'.substr($rawDate, 6, 2),
+                'exception_type' => (int) ($row['exception_type'] ?? 1),
+            ];
+        }
+        $this->insertChunks('stcp_service_dates', $serviceDates);
+
         Cache::forget('stcp.gtfs.patterns');
         Cache::forget('stcp.realtime.current');
         Cache::forget('stcp.realtime.last_good');
-
         @unlink($zipPath);
         foreach (['agency.txt', 'calendar.txt', 'calendar_dates.txt', 'feed_info.txt', 'routes.txt', 'shapes.txt', 'stops.txt', 'stop_times.txt', 'trips.txt'] as $file) {
             @unlink($directory.'/'.$file);
         }
 
-        $this->components->info(sprintf('Importação concluída: %d padrões e %d traçados.', count($patterns), $shapeCount));
+        $this->components->info(sprintf(
+            'Importação concluída: %d paragens, %d viagens, %d horários, %d padrões e %d traçados.',
+            count($stops),
+            count($trips),
+            $stopTimeCount,
+            count($patterns),
+            $shapeCount,
+        ));
 
         return self::SUCCESS;
     }
@@ -135,6 +226,14 @@ final class ImportStcpGtfs extends Command
             /** @var array<string, string> $row */
             $row = array_combine($header, array_slice(array_map(fn (mixed $value): string => trim((string) $value), $columns), 0, count($header)));
             yield $row;
+        }
+    }
+
+    /** @param array<int, array<string, mixed>> $rows */
+    private function insertChunks(string $table, array $rows): void
+    {
+        foreach (array_chunk($rows, 1000) as $chunk) {
+            DB::table($table)->insert($chunk);
         }
     }
 
