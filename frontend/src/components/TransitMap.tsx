@@ -26,6 +26,7 @@ interface Props {
   vehicles: Vehicle[];
   stops: StopInfo[];
   mode: 'buses' | 'stops';
+  showOnlySelectedStop: boolean;
   selectedId: string | null;
   selectedStopId: string | null;
   theme: 'light' | 'dark';
@@ -160,7 +161,7 @@ function stopIcon(leaflet: typeof Leaflet, selected: boolean): Leaflet.DivIcon {
   });
 }
 
-export default function TransitMap({ vehicles, stops, mode, selectedId, selectedStopId, theme, focus, fit, shapes, routePath, routeStops, routeLine, userPosition, onSelect, onStopSelect, onViewChange }: Props) {
+export default function TransitMap({ vehicles, stops, mode, showOnlySelectedStop, selectedId, selectedStopId, theme, focus, fit, shapes, routePath, routeStops, routeLine, userPosition, onSelect, onStopSelect, onViewChange }: Props) {
   const elementRef = useRef<HTMLDivElement>(null);
   const kitRef = useRef<MapKit | null>(null);
   const onSelectRef = useRef(onSelect);
@@ -186,11 +187,12 @@ export default function TransitMap({ vehicles, stops, mode, selectedId, selected
     void import('leaflet').then((module) => {
       if (disposed || !elementRef.current || kitRef.current) return;
       const leaflet = module.default;
-      const map = leaflet.map(elementRef.current, { zoomControl: false, attributionControl: true }).setView([41.1579, -8.6291], 13);
+      const map = leaflet.map(elementRef.current, { zoomControl: false, attributionControl: false }).setView([41.1579, -8.6291], 13);
       const tiles = leaflet.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19,
         attribution: '&copy; OpenStreetMap contributors · STCP / Porto Digital',
       }).addTo(map);
+      leaflet.control.attribution({ position: 'topleft' }).addTo(map);
       const reportView = () => {
         const center = map.getCenter();
         onViewChangeRef.current({ lat: center.lat, lon: center.lng, zoom: map.getZoom() });
@@ -265,6 +267,17 @@ export default function TransitMap({ vehicles, stops, mode, selectedId, selected
     const drawStops = () => {
       kit.stops.clearLayers();
       if (mode !== 'stops') return;
+      const selectedStop = selectedStopId ? stops.find((stop) => stop.id === selectedStopId) : null;
+      if (showOnlySelectedStop) {
+        if (selectedStop) {
+          kit.leaflet.marker([selectedStop.lat, selectedStop.lon], {
+            icon: stopIcon(kit.leaflet, true),
+            keyboard: true,
+            zIndexOffset: 1200,
+          }).on('click', () => onStopSelectRef.current(selectedStop)).addTo(kit.stops);
+        }
+        return;
+      }
       if (routeStops.length > 0) {
         routeStops.forEach((stop) => {
           const selected = stop.id === selectedStopId;
@@ -276,7 +289,6 @@ export default function TransitMap({ vehicles, stops, mode, selectedId, selected
         });
         return;
       }
-      const selectedStop = selectedStopId ? stops.find((stop) => stop.id === selectedStopId) : null;
       if (selectedStop) {
         kit.leaflet.marker([selectedStop.lat, selectedStop.lon], {
           icon: stopIcon(kit.leaflet, true),
@@ -315,7 +327,7 @@ export default function TransitMap({ vehicles, stops, mode, selectedId, selected
       kit.map.off('moveend', drawStops);
       kit.stops.clearLayers();
     };
-  }, [mode, routeStops, selectedStopId, stops]);
+  }, [mode, routeStops, selectedStopId, showOnlySelectedStop, stops]);
 
   useEffect(() => {
     const kit = kitRef.current;

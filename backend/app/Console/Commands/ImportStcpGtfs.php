@@ -21,7 +21,10 @@ final class ImportStcpGtfs extends Command
 
     public function handle(): int
     {
-        $url = (string) ($this->option('url') ?: config('stcp.gtfs_url'));
+        $url = trim((string) ($this->option('url') ?: config('stcp.gtfs_url')));
+        if ($url === '') {
+            $url = $this->latestGtfsUrl();
+        }
         $directory = storage_path('app/private/stcp-gtfs-import');
         $zipPath = $directory.'/feed.zip';
         if (! is_dir($directory) && ! mkdir($directory, 0755, true) && ! is_dir($directory)) {
@@ -200,6 +203,35 @@ final class ImportStcpGtfs extends Command
         ));
 
         return self::SUCCESS;
+    }
+
+    private function latestGtfsUrl(): string
+    {
+        $datasetUrl = (string) config('stcp.gtfs_dataset_api_url');
+        $response = Http::connectTimeout(10)->timeout(30)->get($datasetUrl)->throw()->json();
+        $resources = $response['result']['resources'] ?? null;
+        if (! is_array($resources)) {
+            throw new RuntimeException('O Portal de Dados do Porto não devolveu recursos GTFS.');
+        }
+
+        $resources = array_values(array_filter($resources, static function (mixed $resource): bool {
+            if (! is_array($resource) || ($resource['state'] ?? null) !== 'active') {
+                return false;
+            }
+            $format = Str::upper((string) ($resource['format'] ?? ''));
+            $url = (string) ($resource['url'] ?? '');
+
+            return in_array($format, ['GTFS', 'ZIP'], true) && filter_var($url, FILTER_VALIDATE_URL) !== false;
+        }));
+        usort($resources, static fn (array $first, array $second): int => ((int) ($second['position'] ?? -1)) <=> ((int) ($first['position'] ?? -1))
+        );
+        $url = (string) ($resources[0]['url'] ?? '');
+        if ($url === '') {
+            throw new RuntimeException('Não foi possível encontrar o ZIP GTFS mais recente.');
+        }
+        $this->components->info('A usar o recurso GTFS mais recente do Portal de Dados do Porto.');
+
+        return $url;
     }
 
     /**

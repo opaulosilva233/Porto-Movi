@@ -175,6 +175,13 @@ export default function App() {
     const arrivingIds = new Set(arrivals.arrivals.map((arrival) => arrival.vehicleId));
     return vehicles.filter((vehicle) => arrivingIds.has(vehicle.id));
   }, [arrivals, selectedStop, vehicles]);
+  const mapVehicles = useMemo(() => {
+    if (mode === 'buses') return visibleVehicles;
+    if (!selected) return stopVehicles;
+    return stopVehicles.filter((vehicle) =>
+      vehicle.line === selected.line && vehicle.directionId === selected.directionId,
+    );
+  }, [mode, selected, stopVehicles, visibleVehicles]);
   const updatedSeconds = updatedAt ? Math.max(0, Math.round((clock - new Date(updatedAt).getTime()) / 1000)) : 0;
 
   const chooseVehicle = useCallback((vehicle: Vehicle) => {
@@ -301,9 +308,10 @@ export default function App() {
   return (
     <main className="fixed inset-0 overflow-hidden bg-zinc-100 text-zinc-950 dark:bg-[#08101c] dark:text-white">
       <TransitMap
-        vehicles={mode === 'buses' ? visibleVehicles : stopVehicles}
+        vehicles={mapVehicles}
         stops={stops}
         mode={mode}
+        showOnlySelectedStop={Boolean(selected && selectedStop)}
         selectedId={selected?.id ?? null}
         selectedStopId={selectedStop?.id ?? null}
         theme={theme}
@@ -338,7 +346,7 @@ export default function App() {
         {loading ? <div className="status-pill"><RefreshCw className="animate-spin" size={12} /> A ligar à rede STCP</div> : error ? <button className="pointer-events-auto status-pill !bg-rose-600 !text-white" onClick={() => void refresh(true)}>{error}</button> : <div className="status-pill"><i className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> {vehicles.length} em circulação · {agoLabel(updatedSeconds)}</div>}
       </div>
 
-      <div className="absolute right-3 z-[500] flex flex-col gap-2 sm:right-5" style={{ bottom: selected ? 286 : selectedStop ? 'min(58vh, 470px)' : mode === 'stops' ? 210 : 76 }}>
+      <div className="absolute right-3 z-[500] flex flex-col gap-2 sm:right-5" style={{ bottom: selected ? 286 : selectedStop ? 'calc(min(42vh, 390px) + 24px)' : mode === 'stops' ? 210 : 76 }}>
         <button className="map-action" aria-label="Usar a minha localização" onClick={locate}><Crosshair className={locating ? 'animate-pulse' : ''} size={20} /></button>
         <button className="map-action" aria-label="Atualizar dados" onClick={() => void refresh(true)}><RefreshCw className={refreshing ? 'animate-spin' : ''} size={19} /></button>
       </div>
@@ -350,7 +358,7 @@ export default function App() {
             <div className="min-w-0 flex-1"><p className="text-[10px] font-extrabold uppercase tracking-[.14em] text-zinc-400">Viatura {selected.id}</p><h2 className="truncate text-base font-extrabold">Linha {selected.line}</h2></div>
             <button className="icon-button !h-9 !w-9" aria-label={selectedStop ? 'Voltar à paragem' : 'Fechar e regressar ao mapa anterior'} onClick={closeVehicle}><X size={17} /></button>
           </div>
-          {selectedStop && <p className="mt-1.5 flex items-center gap-1 text-[10px] font-bold text-[#005BAC] dark:text-sky-400"><MapPin size={11} /> A caminho de {selectedStop.name} · percurso e paragens visíveis</p>}
+          {selectedStop && <p className="mt-1.5 flex items-center gap-1 text-[10px] font-bold text-[#005BAC] dark:text-sky-400"><MapPin size={11} /> A caminho de {selectedStop.name} · percurso completo e viaturas anteriores</p>}
           <div className="mt-2 grid grid-cols-[1.2fr_.85fr_1.25fr] gap-1.5">
             <div className="flex min-w-0 items-center gap-2 rounded-xl bg-zinc-100 px-2.5 py-2 dark:bg-white/5"><span className={`motion-dot ${movementClass(selected.speedKmh)}`} /><div className="min-w-0"><span className="block text-[9px] font-bold uppercase tracking-wide text-zinc-400">Estado</span><strong className="mt-0.5 block truncate text-[11px]">{movementLabel(selected.speedKmh)}</strong></div></div>
             <div className="rounded-xl bg-zinc-100 px-2 py-2 dark:bg-white/5"><span className="block text-[9px] font-bold uppercase tracking-wide text-zinc-400">Velocidade</span><strong className="mt-0.5 block text-[12px] tabular-nums">{Math.round(selected.speedKmh)} <small className="text-[9px] font-bold text-zinc-400">km/h</small></strong></div>
@@ -365,7 +373,7 @@ export default function App() {
       )}
 
       {selectedStop && !selected && (
-        <section className="stop-panel absolute inset-x-3 bottom-3 z-[520] mx-auto max-h-[55vh] max-w-md overflow-y-auto rounded-[22px] border border-black/5 bg-white p-3 shadow-2xl dark:border-white/10 dark:bg-[#101725]">
+        <section className="stop-panel absolute inset-x-3 bottom-3 z-[520] mx-auto max-h-[42vh] max-w-md overflow-y-auto rounded-[22px] border border-black/5 bg-white p-3 shadow-2xl dark:border-white/10 dark:bg-[#101725]">
           <div className="sticky top-0 z-10 flex items-center gap-3 bg-white pb-2 dark:bg-[#101725]">
             <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[#005BAC] text-white shadow-sm"><MapPin size={21} /></span>
             <div className="min-w-0 flex-1"><p className="text-[9px] font-extrabold uppercase tracking-[.14em] text-zinc-400">Paragem {selectedStop.code}</p><h2 className="truncate text-[15px] font-extrabold">{selectedStop.name}</h2><p className="mt-0.5 text-[10px] font-semibold text-zinc-400">{arrivals?.arrivals.length ?? 0} autocarro{arrivals?.arrivals.length === 1 ? '' : 's'} em aproximação</p></div>

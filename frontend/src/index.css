@@ -19,10 +19,10 @@ button { cursor: pointer; }
 .dark .leaflet-container { background: #08101c; }
 .leaflet-tile-pane { transition: filter .25s ease; }
 [data-theme="dark"] .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.76) contrast(1.08) saturate(.75); }
-.leaflet-control-attribution { border-radius: 10px 0 0; background: rgb(255 255 255 / .72) !important; font-size: 8px !important; backdrop-filter: blur(8px); }
+.leaflet-top .leaflet-control-attribution { margin-top: 170px; margin-left: 8px; }
+.leaflet-control-attribution { border-radius: 0 10px 10px 0; background: rgb(255 255 255 / .72) !important; font-size: 8px !important; backdrop-filter: blur(8px); }
 .dark .leaflet-control-attribution { background: rgb(8 16 28 / .72) !important; color: #a1a1aa; }
 .dark .leaflet-control-attribution a { color: #d4d4d8; }
-.leaflet-bottom { bottom: 68px; }
 .bus-marker-wrap, .user-marker-wrap, .stop-marker-wrap { border: 0 !important; background: transparent !important; }
 .bus-marker-wrap { transition: transform .26s linear; will-change: transform; }
 .leaflet-zoom-anim .bus-marker-wrap, .leaflet-pan-anim .bus-marker-wrap { transition: none; }
