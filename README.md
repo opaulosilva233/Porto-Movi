@@ -1,359 +1,183 @@
-# 🚀 Web Projects Starter Template
+# Porto Movi
 
-## Metro do Porto
+**Os transportes do Porto, num só mapa.**
 
-O botão **Metro** abre uma vista independente da STCP, com estações no mapa,
-pesquisa por linha ou estação, favoritos próprios e as próximas três partidas
-por linha e destino. Os horários do Metro são programados (GTFS), sem posições GPS.
+O Porto Movi é um projeto pessoal de Paulo Silva para explorar os transportes públicos do Porto e da Área Metropolitana: ver onde estão os autocarros, encontrar uma paragem e consultar horários e percursos numa interface simples.
 
-O painel de próximas chegadas consulta também o serviço GraphQL público usado pelo
-Explore Porto, com cache de 15 segundos. Só identifica uma partida como tempo real
-quando a fonte devolve `realtime: true` e um estado de atualização compatível;
-mantém as restantes como programadas e assinala supressões. A disponibilidade de
-previsões depende do fornecedor: na verificação de 14/10/2026, Combatentes devolveu
-apenas dados `SCHEDULED`. Falhas do serviço mantêm o horário GTFS disponível.
-`METRO_DEPARTURES_URL` e `METRO_FEED_PREFIX` permitem configurar a fonte, que não
-tem garantia de estabilidade como API pública documentada. Não fornece posições
-GPS dos metros nesta integração.
+Reúne **STCP, Metro do Porto e UNIR**, com vistas próprias para cada rede, pesquisa, favoritos e um mapa interativo. É um projeto em desenvolvimento, construído com React e Laravel, que evolui à medida que são integradas e validadas novas fontes de dados.
 
-Para instalar ou atualizar os dados:
+> Projeto independente, sem ligação oficial aos operadores. A informação apresentada depende das fontes disponíveis e distingue horários programados de dados em tempo real.
+
+## O que já faz
+
+- **Mapa interativo** com veículos, paragens, estações e traçados de percursos.
+- **STCP em tempo real**, com posição, velocidade, sentido e destino quando disponíveis.
+- **Pesquisa** por linha, nome ou código de paragem, conforme os dados de cada rede.
+- **Próximas partidas** e horários organizados por linha e destino.
+- **Paragens próximas**, mediante autorização de localização no navegador.
+- **Favoritos por operador**, guardados no próprio navegador.
+- **Tema claro e escuro**, com interface adaptada a computador e telemóvel.
+
+### Estado das integrações
+
+| Funcionalidade | STCP | Metro do Porto | UNIR |
+| --- | --- | --- | --- |
+| Paragens ou estações no mapa | Sim | Sim | Sim |
+| Horários programados | Sim, via GTFS | Sim, via GTFS | Sim, via Q.Horas |
+| Consulta de percursos | Sim | Sim | Sim, para os serviços do dia consultado |
+| Posições GPS dos veículos | Sim | Não integradas | Não integradas |
+| Chegadas em tempo real | Estimativas calculadas a partir do GPS | Quando confirmadas pela fonte | Não integradas |
+| Favoritos e pesquisa | Sim | Sim | Sim |
+
+A UNIR utiliza o mesmo painel de paragens e os mesmos cartões de horários da STCP. A vista de autocarros indica a indisponibilidade de GPS; não são criadas posições fictícias a partir dos horários.
+
+## Dados e limitações
+
+### STCP
+
+As posições são obtidas através da plataforma FIWARE do Porto Digital. O GTFS fornece linhas, destinos, paragens, traçados e horários.
+
+Os tempos de chegada são **estimativas do Porto Movi**, calculadas com base na posição do veículo, distância restante no percurso e velocidade. Não são previsões oficiais da STCP nem incluem um modelo de trânsito. Em caso de falha na atualização das posições, a aplicação pode mostrar a última resposta válida, identificada como tal.
+
+### Metro do Porto
+
+As estações, os percursos e os horários são importados do [GTFS oficial do Metro do Porto](https://www.metrodoporto.pt/pages/337). O painel consulta também o serviço GraphQL usado pelo Explore Porto.
+
+Uma partida só é identificada como tempo real quando a resposta da fonte o confirma. As restantes são apresentadas como programadas; supressões são assinaladas quando fornecidas. Esta integração não mostra a posição GPS dos metros.
+
+O endereço GTFS definido no código aponta para uma publicação específica. **É necessário atualizar o feed quando forem publicados novos horários.** A interface avisa quando o calendário importado não abrange o dia consultado.
+
+### UNIR
+
+A integração utiliza os serviços públicos usados pelo [Q.Horas UNIR](https://qhoras.unirmobilidade.pt/): paragens da AMP, horários por dia e percursos por serviço.
+
+Os dados são consultados diretamente, com cache no backend, sem importação manual de GTFS. Atualmente, a integração disponibiliza **horários programados**, sem posições GPS ou previsões de chegada em tempo real. Horas como `24:10` pertencem à madrugada seguinte do dia de serviço; a consulta também considera viagens noturnas do dia anterior.
+
+Os serviços do Q.Horas e do Explore Porto podem mudar ou ficar indisponíveis. A existência de informação numa aplicação de terceiros não significa que exista uma API pública equivalente disponível para este projeto.
+
+O mapa utiliza Leaflet e cartografia OpenStreetMap. Os dados e a cartografia mantêm as condições de utilização das respetivas fontes.
+
+## Executar localmente
+
+É necessário ter **Git, Docker e Docker Compose**. Os comandos abaixo usam Bash; em Windows, podem ser executados no WSL com a integração do Docker ativada. PHP, Composer e Node.js correm nos containers.
 
 ```bash
-docker compose exec backend php artisan migrate
+git clone https://github.com/opaulosilva233/Porto-Movi.git
+cd Porto-Movi
+bash scripts/setup.sh
+```
+
+O script cria o `.env` a partir do exemplo, inicia os serviços, instala as dependências, gera a chave Laravel e executa as migrações. Um `.env` existente é preservado.
+
+Depois, importar os dados da STCP e do Metro:
+
+```bash
+docker compose exec backend php artisan stcp:import-gtfs
 docker compose exec backend php artisan metro:import-gtfs
 ```
 
-A fonte é o [GTFS oficial do Metro do Porto](https://www.metrodoporto.pt/pages/337).
-O ficheiro configurado inicialmente foi publicado em setembro de 2026 e contém
-calendários até 25 de outubro de 2026. Quando o operador publicar novos horários,
-atualizar `METRO_GTFS_URL` no `.env` ou executar
-`php artisan metro:import-gtfs --url="URL_DO_NOVO_ZIP"` no container backend.
-Não existe atualização automática do feed. A interface avisa quando o calendário
-não abrange o dia consultado. As importações são transacionais e não alteram os dados STCP.
+A UNIR não precisa desta etapa. É necessária ligação à Internet para descarregar feeds, consultar as fontes e carregar os mapas.
 
+| Serviço | Endereço local |
+| --- | --- |
+| Aplicação | [localhost:5173](http://localhost:5173) |
+| API | [localhost:8000/api](http://localhost:8000/api) |
+| Estado do backend | [localhost:8000/api/health](http://localhost:8000/api/health) |
 
-[![CI Pipeline](https://github.com/opaulosilva233/Web-Projects-Template/actions/workflows/ci.yml/badge.svg)](https://github.com/opaulosilva233/Web-Projects-Template/actions/workflows/ci.yml)
-[![Docker](https://img.shields.io/badge/Docker-24.0+-2496ED?style=flat&logo=docker&logoColor=white)](https://www.docker.com/)
-[![Laravel](https://img.shields.io/badge/Laravel-11%20%2F%20PHP%208.3-FF2D20?style=flat&logo=laravel&logoColor=white)](https://laravel.com/)
-[![React](https://img.shields.io/badge/React-18%20%2F%20Vite-61DAFB?style=flat&logo=react&logoColor=black)](https://react.dev/)
-[![TailwindCSS](https://img.shields.io/badge/TailwindCSS-3.4-38B2AC?style=flat&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
-[![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1?style=flat&logo=mysql&logoColor=white)](https://www.mysql.com/)
-[![Nginx](https://img.shields.io/badge/Nginx-Alpine-009639?style=flat&logo=nginx&logoColor=white)](https://nginx.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+Estes endereços correspondem às portas definidas no `.env.example`. O ambiente Compose incluído destina-se ao desenvolvimento local.
 
-Starter template profissional, desacoplado e opinativo projetado para acelerar a criação de novas aplicações web modernas. Com apenas um comando (`make setup`), o ambiente completo com backend, frontend, base de dados e proxy reverso fica 100% configurado e pronto para desenvolvimento.
+### Configuração
 
----
+A configuração fica no ficheiro `.env` da raiz, partilhado com o backend Laravel. As principais opções são:
 
-## 📑 Índice
+| Variável | Utilização |
+| --- | --- |
+| `FRONTEND_PORT` / `NGINX_PORT` | Portas locais da aplicação e da API |
+| `VITE_API_BASE_URL` | Endereço da API utilizado pelo navegador |
+| `FRONTEND_URL` | Origem do frontend permitida pelo backend |
+| `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD` | Ligação à base de dados |
+| `STCP_GTFS_URL` | ZIP GTFS alternativo; vazio procura o recurso mais recente no catálogo configurado |
+| `METRO_GTFS_URL` | Endereço do ZIP GTFS do Metro |
+| `METRO_DEPARTURES_URL` / `METRO_FEED_PREFIX` | Fonte de partidas do Metro e prefixo dos identificadores |
+| `UNIR_API_URL` / `UNIR_STOPS_URL` | Fontes de horários, percursos e paragens UNIR |
 
-1. [O que é este Template](#1-o-que-é-este-template)
-2. [Stack Tecnológica](#2-stack-tecnológica)
-3. [Estrutura do Projeto](#3-estrutura-do-projeto)
-4. [Pré-requisitos](#4-pré-requisitos)
-5. [Quick Start (Início Rápido)](#5-quick-start-início-rápido)
-6. [Comandos do Makefile](#6-comandos-do-makefile)
-7. [Configuração de Variáveis de Ambiente (.env)](#7-configuração-de-variáveis-de-ambiente-env)
-8. [Ambiente Docker & Arquitetura](#8-ambiente-docker--arquitetura)
-9. [Fluxo de Desenvolvimento](#9-fluxo-de-desenvolvimento)
-10. [Testes & Qualidade de Código](#10-testes--qualidade-de-código)
-11. [Integração Contínua (CI)](#11-integração-contínua-ci)
-12. [Como Utilizar como GitHub Template](#12-como-utilizar-como-github-template)
+As opções do Metro podem ser acrescentadas ao `.env`; os valores predefinidos estão em `backend/config/metro.php`. As restantes fontes estão configuradas em `backend/config/stcp.php` e `backend/config/unir.php`.
 
----
+### Atualizar horários
 
-## 1. O que é este Template
-
-Este repositório é uma base sólida para novos projetos fullstack desacoplados (**Decoupled Monorepo**). Ele resolve as fricções comuns de configuração inicial:
-- Orquestração de containers com Docker Compose e healthchecks configurados.
-- Backend estruturado como API RESTful em Laravel 11 com tipagem estrita e padrões modernos.
-- Frontend em React com Vite, TypeScript e Tailwind CSS integrado a um cliente de API centralizado.
-- Automação completa via Makefile para execução simplificada sem necessidade de instalar PHP, Composer ou Node no host.
-- Pipeline de CI pronto no GitHub Actions para validação de testes e estilo de código.
-
----
-
-## 2. Stack Tecnológica
-
-| Componente | Tecnologia | Papel no Projeto |
-| :--- | :--- | :--- |
-| **Backend API** | **Laravel 11 / PHP 8.3 FPM** | Endpoints RESTful, ORM Eloquent, autenticação Sanctum |
-| **Frontend SPA** | **React 18 / TypeScript / Vite** | Interface reativa, moderna e tipada |
-| **Estilização** | **Tailwind CSS 3.4** | Design system e classes utilitárias |
-| **Web Server** | **Nginx Alpine** | Reverse proxy otimizado para o backend PHP-FPM |
-| **Base de Dados** | **MySQL 8.0** | Persistência relacional com volume Docker |
-| **Orquestração** | **Docker & Docker Compose** | Ambientes isolados e reprodutíveis |
-| **Automação** | **GNU Make & Bash** | Gestão de ciclo de vida e setup com 1 comando |
-| **CI/CD** | **GitHub Actions** | Validação automatizada de testes e lint |
-
----
-
-## 3. Estrutura do Projeto
-
-```text
-├── .github/
-│   └── workflows/
-│       └── ci.yml               # Pipeline de CI do GitHub Actions
-├── backend/                     # API RESTful em Laravel 11 (PHP 8.3)
-│   ├── app/                     # Controllers, Models, Requests, Resources
-│   ├── bootstrap/               # Inicialização da aplicação (app.php, providers.php)
-│   ├── config/                  # Configurações de CORS, Sanctum, Database, etc.
-│   ├── database/                # Migrações e Seeders
-│   ├── routes/                  # Rotas da API (api.php, web.php, console.php)
-│   ├── tests/                   # Testes automatizados (Feature & Unit)
-│   ├── composer.json            # Dependências PHP do Backend
-│   └── pint.json                # Configuração do linter Laravel Pint
-├── frontend/                    # Single Page Application (React + Vite + TypeScript)
-│   ├── src/
-│   │   ├── services/            # Cliente HTTP (api.ts) configurado
-│   │   ├── types/               # Tipos e interfaces TypeScript
-│   │   ├── App.tsx              # Componente raiz com verificação de status
-│   │   ├── index.css            # Diretivas do Tailwind CSS
-│   │   └── main.tsx             # Ponto de entrada do React
-│   ├── package.json             # Dependências Node.js
-│   ├── vite.config.ts           # Configurações do Vite
-│   └── tailwind.config.js       # Configuração do Tailwind CSS
-├── docker/
-│   ├── nginx/
-│   │   └── default.conf         # Configuração do Nginx com suporte a PHP-FPM
-│   └── php/
-│       ├── Dockerfile           # Imagem PHP 8.3 FPM Alpine com extensões
-│       └── local.ini            # Ajustes de memória, opcache e limites do PHP
-├── scripts/
-│   └── setup.sh                 # Script de setup e verificação do ambiente
-├── .env.example                 # Modelo de variáveis de ambiente do projeto
-├── .gitignore                   # Regras de exclusão do Git
-├── AGENT_SKILLS.md              # Diretrizes estritas para Agentes de IA
-├── docker-compose.yml           # Definição multi-container dos serviços
-├── Makefile                     # Atalhos de automação para o terminal
-└── README.md                    # Documentação do projeto
-```
-
----
-
-## 4. Pré-requisitos
-
-Para executar o projeto, você precisa apenas de:
-- **Docker Desktop** (versão 24.0 ou superior) ou **Docker Engine** + **Docker Compose v2**
-- **Make** (nativo em Linux/macOS, ou disponível via Git Bash / WSL no Windows)
-
-> 💡 *Nota:* Não é necessário ter PHP, Composer ou Node.js instalados na sua máquina física. Todo o ambiente de execução roda dentro dos containers Docker.
-
----
-
-## 5. Quick Start (Início Rápido)
-
-Com o repositório clonado, inicialize o ambiente completo em um único comando:
+Os feeds GTFS **não são atualizados automaticamente**. Para voltar a importar, usar os mesmos comandos de instalação ou indicar um novo ZIP:
 
 ```bash
-# 1. Clonar o projeto
-git clone https://github.com/opaulosilva233/Web-Projects-Template.git meu-projeto
-cd meu-projeto
-
-# 2. Executar o setup automático
-make setup
-
-# Alternativa no Windows sem make (Git Bash / WSL):
-# bash scripts/setup.sh
+docker compose exec backend php artisan stcp:import-gtfs --url="URL_DO_ZIP_STCP"
+docker compose exec backend php artisan metro:import-gtfs --url="URL_DO_ZIP_METRO"
 ```
 
-O comando `make setup` é **idempotente** e realiza automaticamente:
-1. Verificação da disponibilidade do Docker e Docker Compose.
-2. Criação do `.env` a partir de `.env.example` (sem sobrescrever se já existir) e montagem do mesmo ficheiro no backend Laravel.
-3. Construção das imagens e inicialização dos containers em background.
-4. Espera pelo healthcheck da base de dados MySQL.
-5. Instalação das dependências via Composer; o container frontend instala as dependências Node automaticamente quando necessário.
-6. Geração da chave `APP_KEY` do Laravel.
-7. Execução das migrações de banco de dados.
+A atualização das posições e dos painéis na interface é independente da importação dos horários. A UNIR mantém cache de uma hora para paragens e percursos e de um minuto para horários.
 
-### Aceder à Aplicação
+## Desenvolvimento
 
-Assim que o setup for concluído, abra o navegador:
-
-| Serviço | URL | Descrição |
-| :--- | :--- | :--- |
-| 🌐 **Frontend (React)** | [http://localhost:5173](http://localhost:5173) | Interface do utilizador (SPA) |
-| 🔌 **Backend (API)** | [http://localhost:8000](http://localhost:8000) | Ponto de entrada da API Nginx/Laravel |
-| 🩺 **API Healthcheck** | [http://localhost:8000/api/health](http://localhost:8000/api/health) | Verificação de status JSON da API e DB |
-| 🗄️ **MySQL Database** | `localhost:3306` | Acesso direto ao banco de dados |
-
----
-
-## 6. Comandos do Makefile
-
-O `Makefile` centraliza todos os comandos necessários para o fluxo de trabalho:
+| Componente | Tecnologias |
+| --- | --- |
+| Interface | React 18, TypeScript, Vite, Tailwind CSS, Lucide |
+| Mapas | Leaflet, OpenStreetMap |
+| API | Laravel 11, PHP 8.3 |
+| Base de dados | MySQL 8 |
+| Ambiente | Docker Compose, Nginx, Node.js 20 |
+| Validação | PHPUnit, Laravel Pint, ESLint, TypeScript, GitHub Actions |
 
 ```text
-make setup           Prepara e inicializa todo o ambiente automaticamente
-make up              Inicia todos os containers em background
-make down            Para e remove os containers e redes
-make restart         Reinicia todos os containers
-make build           Reconstrói as imagens Docker
-make logs            Exibe os logs agregados em tempo real (Ctrl+C para sair)
-make ps              Lista o status e a saúde de todos os containers
-make shell           Abre o terminal interativo no container do Backend (PHP)
-make shell-frontend  Abre o terminal interativo no container do Frontend (Node)
-make install         Instala dependências do backend (Composer) e frontend (NPM)
-make test            Executa todas as suites de testes (Backend + Frontend)
-make test-backend    Executa a suite de testes no Laravel (PHPUnit/Pest)
-make test-frontend   Executa os testes do frontend (se configurados)
-make lint            Executa a verificação de código (Pint e ESLint)
-make lint-backend    Verifica/corrige estilo de código no Laravel via Pint
-make lint-frontend   Executa o linter no Frontend via ESLint
-make migrate         Executa migrações pendentes do Laravel
-make fresh           Recria a base de dados do zero e executa seeders (migrate:fresh --seed)
-make seed            Executa os seeders de dados no Laravel
+backend/
+  app/Console/Commands/     Importadores GTFS
+  app/Http/Controllers/Api/ Endpoints por operador
+  app/Services/            Posições e chegadas STCP
+  config/                  Configuração das fontes
+  database/migrations/     Estrutura dos dados
+  tests/Feature/           Testes da API e das importações
+frontend/
+  src/components/          Mapa e painéis
+  src/services/            Cliente da API
+  src/types/               Tipos partilhados no frontend
+  src/App.tsx              Interface e navegação entre operadores
+docker/                    PHP e Nginx
+scripts/                   Preparação do ambiente
 ```
 
----
-
-## 7. Configuração de Variáveis de Ambiente (.env)
-
-O ficheiro `.env.example` traz configurações padronizadas prontas para uso local:
-
-```dotenv
-# Nome do projeto usado como prefixo para containers Docker
-COMPOSE_PROJECT_NAME=starter_template
-
-# Portas mapeadas no Host
-NGINX_PORT=8000
-FRONTEND_PORT=5173
-DB_PORT=3306
-
-# Configuração da Base de Dados
-DB_CONNECTION=mysql
-DB_HOST=db
-DB_PORT=3306
-DB_DATABASE=app_database
-DB_USERNAME=app_user
-DB_PASSWORD=secret_password
-DB_ROOT_PASSWORD=root_secret_password
-
-# Backend / Laravel
-APP_NAME="Web Project Template"
-APP_ENV=local
-APP_KEY=
-APP_DEBUG=true
-APP_URL=http://localhost:8000
-FRONTEND_URL=http://localhost:5173
-
-# Frontend / Vite
-VITE_API_BASE_URL=http://localhost:8000/api
-```
-
----
-
-## 8. Ambiente Docker & Arquitetura
-
-Os serviços estão orquestrados no `docker-compose.yml`:
-
-```mermaid
-graph TD
-    User([Utilizador / Navegador]) -->|Porta 5173| Frontend[Container Frontend: Node 20 / Vite]
-    User -->|Porta 8000| Nginx[Container Nginx: Reverse Proxy]
-    Frontend -->|Chamadas HTTP /api| Nginx
-    Nginx -->|FastCGI Porta 9000| Backend[Container Backend: PHP 8.3 FPM]
-    Backend -->|Porta 3306| DB[(Container MySQL 8.0)]
-```
-
-- **Sincronização de Código em Tempo Real:** As pastas `backend/` e `frontend/` possuem bind mount com os containers. Qualquer alteração em código reflete instantaneamente (com Hot Module Replacement no Vite).
-- **Isolamento de `node_modules`:** O frontend utiliza um volume anônimo para `node_modules`, evitando incompatibilidades de binários entre sistemas operacionais host e o container Linux Alpine.
-- **Healthcheck Integrado:** O container `db` possui healthcheck ativo com `mysqladmin ping`, garantindo que o backend só inicializa conexões quando o MySQL estiver totalmente pronto.
-
----
-
-## 9. Fluxo de Desenvolvimento
-
-### Criar uma nova rota / endpoint no Backend:
-1. Defina a rota em `backend/routes/api.php`.
-2. Crie o Form Request para validação se aplicável:
-   ```bash
-   docker compose exec backend php artisan make:request Feature/StoreItemRequest
-   ```
-3. Crie o Controller e o Resource:
-   ```bash
-   docker compose exec backend php artisan make:controller Api/ItemController
-   docker compose exec backend php artisan make:resource Feature/ItemResource
-   ```
-
-### Consumir a API no Frontend:
-1. Importe o cliente configurado em `frontend/src/services/api.ts`:
-   ```typescript
-   import { api } from './services/api';
-   import { ApiResponse } from './types';
-
-   const response = await api.get<ApiResponse<YourType>>('/items');
-   ```
-
----
-
-## 10. Testes & Qualidade de Código
-
-Para garantir a confiabilidade da aplicação:
+Comandos úteis, executados na raiz do projeto:
 
 ```bash
-# Executar todos os testes
-make test
+# Iniciar ou parar o ambiente
+docker compose up -d
+docker compose down
 
-# Executar apenas testes do Backend
-make test-backend
+# Consultar os logs
+docker compose logs -f backend frontend nginx
 
-# Executar linters de código
-make lint
+# Aplicar novas migrações
+docker compose exec backend php artisan migrate
+
+# Validar backend e frontend
+docker compose exec backend php artisan test
+docker compose exec backend vendor/bin/pint --test
+docker compose exec frontend npm run lint
+docker compose exec frontend npm run build
 ```
 
-- **Backend:** Testes com PHPUnit / Pest configurados com SQLite em memória para rapidez máxima. Estilo padronizado com **Laravel Pint**.
-- **Frontend:** Verificação de tipos com TypeScript (`tsc -b`) e linting via **ESLint**.
+Os testes cobrem, entre outros casos, normalização de veículos, calendários e exceções, serviços após a meia-noite, percursos e falhas das fontes externas. O build do frontend verifica os tipos TypeScript e gera os ficheiros de produção.
 
----
+### Se algo não carregar
 
-## 11. Integração Contínua (CI)
+- **API indisponível:** verificar `docker compose ps` e os logs do backend e do Nginx.
+- **STCP ou Metro sem paragens/horários:** confirmar que as migrações e a importação GTFS foram executadas.
+- **Metro sem horários para hoje:** atualizar o feed e voltar a importar.
+- **UNIR sem autocarros no mapa:** o GPS ainda não está integrado; usar Paragens para consultar horários e percursos.
+- **Paragens próximas indisponíveis:** verificar a permissão de localização do navegador. Fora de `localhost`, esta funcionalidade requer normalmente HTTPS.
 
-O workflow do GitHub Actions em `.github/workflows/ci.yml` roda automaticamente em cada `push` ou `pull_request` nas branches `main` e `develop`:
-- **Job Backend:** Inicializa PHP 8.3, instala dependências com cache de Composer, sobe serviço MySQL 8.0, roda migrações, valida estilo com Pint e executa a suite de testes.
-- **Job Frontend:** Inicializa Node.js 20, instala pacotes com cache de NPM, executa linter e valida o build de produção (`npm run build`).
+## Sobre o projeto
 
----
+Desenvolvido por **Paulo Silva** como projeto pessoal. O foco é tornar a consulta dos transportes mais prática e continuar a melhorar a aplicação com dados verificáveis. A cobertura de tempo real, sobretudo na UNIR, continua dependente do acesso a fontes adequadas.
 
-## 12. Como Utilizar como GitHub Template
+Sugestões e problemas podem ser registados nas [issues do repositório](https://github.com/opaulosilva233/Porto-Movi/issues). Ao reportar um problema com transportes, indicar o operador, a linha, a paragem e a data/hora ajuda a reproduzir a situação.
 
-1. No GitHub, clique no botão verde **"Use this template"** > **"Create a new repository"**.
-2. Defina o nome do seu novo projeto e clone-o para a sua máquina:
-   ```bash
-   git clone https://github.com/<seu-usuario>/<seu-novo-projeto>.git
-   cd <seu-novo-projeto>
-   ```
-3. Execute o setup inicial:
-   ```bash
-   make setup
-   ```
-4. Comece a programar imediatamente! 🚀
+## Licença
 
----
-
-## 📄 Licença
-
-Este projeto está sob a licença [MIT](LICENSE). Sinta-se à vontade para usá-lo em projetos pessoais e comerciais.
-
-## UNIR
-
-O botão **UNIR** apresenta paragens no mapa, pesquisa por linha/nome/código,
-favoritos próprios e próximas três partidas por linha, destino e sentido.
-A UNIR partilha o painel de paragens, cartões de horários, pesquisa, favoritos e
-controlos de mapa da STCP. Os botões de percurso abaixo dos horários mostram o
-traçado e as paragens da variante escolhida. A vista de autocarros assinala
-explicitamente que ainda não existe uma fonte GPS UNIR integrada. Os dados são obtidos dos serviços públicos usados pelo
-[Q.Horas UNIR](https://qhoras.unirmobilidade.pt/), sem importar um GTFS manualmente.
-
-Esta integração mostra **horários programados**, não posições GPS nem previsões
-em tempo real. Horas acima de 24:00 pertencem à madrugada seguinte do dia de serviço.
-Os percursos disponíveis são os dos serviços presentes no horário consultado.
-A disponibilidade e a cobertura dependem da fonte; uma falha devolve indisponibilidade,
-nunca uma lista vazia que sugira ausência de serviço.
-
-A fonte de paragens é o WFS `paragens:paragens_geoserver` da AMP; horários e traçados
-usam `get_horarios_prg` e `get_horarios_serv`. Cache de uma hora para paragens/percursos
-e de um minuto para horários. São serviços utilizados pelo site público, sem garantia
-de estabilidade como API documentada. `UNIR_API_URL` e `UNIR_STOPS_URL` permitem
-configurar os endereços. Na validação local foram recebidas 12 066 paragens e o
-percurso 5002 desde Polo Universitário com 71 paragens e geometria detalhada.
+O código está disponível sob a [licença MIT](LICENSE). Esta licença não substitui as condições de utilização dos dados de transporte ou da cartografia.
