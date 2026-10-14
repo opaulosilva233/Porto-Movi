@@ -1,5 +1,37 @@
 # 🚀 Web Projects Starter Template
 
+## Metro do Porto
+
+O botão **Metro** abre uma vista independente da STCP, com estações no mapa,
+pesquisa por linha ou estação, favoritos próprios e as próximas três partidas
+por linha e destino. Os horários do Metro são programados (GTFS), sem posições GPS.
+
+O painel de próximas chegadas consulta também o serviço GraphQL público usado pelo
+Explore Porto, com cache de 15 segundos. Só identifica uma partida como tempo real
+quando a fonte devolve `realtime: true` e um estado de atualização compatível;
+mantém as restantes como programadas e assinala supressões. A disponibilidade de
+previsões depende do fornecedor: na verificação de 14/10/2026, Combatentes devolveu
+apenas dados `SCHEDULED`. Falhas do serviço mantêm o horário GTFS disponível.
+`METRO_DEPARTURES_URL` e `METRO_FEED_PREFIX` permitem configurar a fonte, que não
+tem garantia de estabilidade como API pública documentada. Não fornece posições
+GPS dos metros nesta integração.
+
+Para instalar ou atualizar os dados:
+
+```bash
+docker compose exec backend php artisan migrate
+docker compose exec backend php artisan metro:import-gtfs
+```
+
+A fonte é o [GTFS oficial do Metro do Porto](https://www.metrodoporto.pt/pages/337).
+O ficheiro configurado inicialmente foi publicado em setembro de 2026 e contém
+calendários até 25 de outubro de 2026. Quando o operador publicar novos horários,
+atualizar `METRO_GTFS_URL` no `.env` ou executar
+`php artisan metro:import-gtfs --url="URL_DO_NOVO_ZIP"` no container backend.
+Não existe atualização automática do feed. A interface avisa quando o calendário
+não abrange o dia consultado. As importações são transacionais e não alteram os dados STCP.
+
+
 [![CI Pipeline](https://github.com/opaulosilva233/Web-Projects-Template/actions/workflows/ci.yml/badge.svg)](https://github.com/opaulosilva233/Web-Projects-Template/actions/workflows/ci.yml)
 [![Docker](https://img.shields.io/badge/Docker-24.0+-2496ED?style=flat&logo=docker&logoColor=white)](https://www.docker.com/)
 [![Laravel](https://img.shields.io/badge/Laravel-11%20%2F%20PHP%208.3-FF2D20?style=flat&logo=laravel&logoColor=white)](https://laravel.com/)
@@ -302,3 +334,26 @@ O workflow do GitHub Actions em `.github/workflows/ci.yml` roda automaticamente 
 ## 📄 Licença
 
 Este projeto está sob a licença [MIT](LICENSE). Sinta-se à vontade para usá-lo em projetos pessoais e comerciais.
+
+## UNIR
+
+O botão **UNIR** apresenta paragens no mapa, pesquisa por linha/nome/código,
+favoritos próprios e próximas três partidas por linha, destino e sentido.
+A UNIR partilha o painel de paragens, cartões de horários, pesquisa, favoritos e
+controlos de mapa da STCP. Os botões de percurso abaixo dos horários mostram o
+traçado e as paragens da variante escolhida. A vista de autocarros assinala
+explicitamente que ainda não existe uma fonte GPS UNIR integrada. Os dados são obtidos dos serviços públicos usados pelo
+[Q.Horas UNIR](https://qhoras.unirmobilidade.pt/), sem importar um GTFS manualmente.
+
+Esta integração mostra **horários programados**, não posições GPS nem previsões
+em tempo real. Horas acima de 24:00 pertencem à madrugada seguinte do dia de serviço.
+Os percursos disponíveis são os dos serviços presentes no horário consultado.
+A disponibilidade e a cobertura dependem da fonte; uma falha devolve indisponibilidade,
+nunca uma lista vazia que sugira ausência de serviço.
+
+A fonte de paragens é o WFS `paragens:paragens_geoserver` da AMP; horários e traçados
+usam `get_horarios_prg` e `get_horarios_serv`. Cache de uma hora para paragens/percursos
+e de um minuto para horários. São serviços utilizados pelo site público, sem garantia
+de estabilidade como API documentada. `UNIR_API_URL` e `UNIR_STOPS_URL` permitem
+configurar os endereços. Na validação local foram recebidas 12 066 paragens e o
+percurso 5002 desde Polo Universitário com 71 paragens e geometria detalhada.

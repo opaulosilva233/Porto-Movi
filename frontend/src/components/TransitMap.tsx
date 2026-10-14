@@ -23,6 +23,7 @@ interface MapViewState {
 }
 
 interface Props {
+  operator?: 'stcp' | 'metro' | 'unir';
   vehicles: Vehicle[];
   stops: StopInfo[];
   mode: 'buses' | 'stops';
@@ -161,7 +162,7 @@ function stopIcon(leaflet: typeof Leaflet, selected: boolean): Leaflet.DivIcon {
   });
 }
 
-export default function TransitMap({ vehicles, stops, mode, showOnlySelectedStop, selectedId, selectedStopId, theme, focus, fit, shapes, routePath, routeStops, routeLine, userPosition, onSelect, onStopSelect, onViewChange }: Props) {
+export default function TransitMap({ operator = 'stcp', vehicles, stops, mode, showOnlySelectedStop, selectedId, selectedStopId, theme, focus, fit, shapes, routePath, routeStops, routeLine, userPosition, onSelect, onStopSelect, onViewChange }: Props) {
   const elementRef = useRef<HTMLDivElement>(null);
   const kitRef = useRef<MapKit | null>(null);
   const onSelectRef = useRef(onSelect);
@@ -190,7 +191,7 @@ export default function TransitMap({ vehicles, stops, mode, showOnlySelectedStop
       const map = leaflet.map(elementRef.current, { zoomControl: false, attributionControl: false }).setView([41.1579, -8.6291], 13);
       const tiles = leaflet.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19,
-        attribution: '&copy; OpenStreetMap contributors · STCP / Porto Digital',
+        attribution: '&copy; OpenStreetMap contributors · '+(operator === 'metro' ? 'Metro do Porto' : operator === 'unir' ? 'UNIR / AMP' : 'STCP / Porto Digital'),
       }).addTo(map);
       leaflet.control.attribution({ position: 'topleft' }).addTo(map);
       const reportView = () => {
@@ -218,7 +219,7 @@ export default function TransitMap({ vehicles, stops, mode, showOnlySelectedStop
       kitRef.current?.map.remove();
       kitRef.current = null;
     };
-  }, []);
+  }, [operator]);
 
   useEffect(() => {
     const kit = kitRef.current;
@@ -281,8 +282,15 @@ export default function TransitMap({ vehicles, stops, mode, showOnlySelectedStop
       if (routeStops.length > 0) {
         routeStops.forEach((stop) => {
           const selected = stop.id === selectedStopId;
+          const metroIcon = kit.leaflet.divIcon({
+            className: 'metro-route-stop',
+            html: `<span style="display:block;width:100%;height:100%;border-radius:50%;background:${selected ? lineColor(routeLine ?? '') : '#fff'};border:3px solid ${selected ? '#fff' : lineColor(routeLine ?? '')};box-shadow:0 1px 5px #0008"></span>`,
+            iconSize: selected ? [20, 20] : [12, 12],
+            iconAnchor: selected ? [10, 10] : [6, 6],
+          });
           kit.leaflet.marker([stop.lat, stop.lon], {
-            icon: stopIcon(kit.leaflet, selected),
+            icon: operator === 'metro' ? metroIcon : stopIcon(kit.leaflet, selected),
+            title: stop.name,
             keyboard: true,
             zIndexOffset: selected ? 1200 : 300,
           }).on('click', () => onStopSelectRef.current(stop)).addTo(kit.stops);
@@ -327,7 +335,7 @@ export default function TransitMap({ vehicles, stops, mode, showOnlySelectedStop
       kit.map.off('moveend', drawStops);
       kit.stops.clearLayers();
     };
-  }, [mode, routeStops, selectedStopId, showOnlySelectedStop, stops]);
+  }, [mode, operator, routeLine, routeStops, selectedStopId, showOnlySelectedStop, stops]);
 
   useEffect(() => {
     const kit = kitRef.current;
@@ -362,8 +370,9 @@ export default function TransitMap({ vehicles, stops, mode, showOnlySelectedStop
       kit.map.flyTo(fit.points[0], 16, { duration: 0.7 });
       return;
     }
-    kit.map.fitBounds(fit.points, { paddingTopLeft: [42, 118], paddingBottomRight: [42, 98], maxZoom: 15, animate: true });
-  }, [fit]);
+    const panelPadding = operator !== 'stcp' && selectedStopId ? Math.round(kit.map.getSize().y * 0.42) + 24 : 98;
+    kit.map.fitBounds(fit.points, { paddingTopLeft: [42, 175], paddingBottomRight: [42, panelPadding], maxZoom: 15, animate: true });
+  }, [fit, operator, selectedStopId]);
 
   useEffect(() => {
     const kit = kitRef.current;
@@ -378,7 +387,7 @@ export default function TransitMap({ vehicles, stops, mode, showOnlySelectedStop
     }
   }, [userPosition]);
 
-  return <div ref={elementRef} className="absolute inset-0" aria-label="Mapa dos autocarros STCP" />;
+  return <div ref={elementRef} className="absolute inset-0" aria-label={operator === 'metro' ? 'Mapa das estações do Metro do Porto' : operator === 'unir' ? 'Mapa das paragens UNIR' : 'Mapa dos autocarros STCP'} />;
 }
 
 export type { MapFit, MapFocus, MapViewState };

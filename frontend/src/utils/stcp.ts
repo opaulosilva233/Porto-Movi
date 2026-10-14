@@ -13,6 +13,8 @@ export const STCP_COLORS = {
 
 export function lineColor(line: string): string {
   const normalized = line.toUpperCase().trim();
+  const metroColors: Record<string, string> = { A: '#199FDA', B: '#C63920', BX: '#C63920', C: '#A3BE31', D: '#EBBC14', E: '#736EB0', F: '#EE731C' };
+  if (metroColors[normalized]) return metroColors[normalized];
 
   if (/^(?:[1-9]|1[0-4])M$/.test(normalized)) return STCP_COLORS.night;
   if (normalized === '1') return STCP_COLORS.electricGold;
@@ -34,7 +36,7 @@ export function lineColor(line: string): string {
 
 export function lineTextColor(line: string): string {
   const color = lineColor(line);
-  if (color === STCP_COLORS.cyan || color === STCP_COLORS.yellow || color === STCP_COLORS.electricGold) {
+  if (color === '#EBBC14' || color === '#A3BE31' || color === STCP_COLORS.cyan || color === STCP_COLORS.yellow || color === STCP_COLORS.electricGold) {
     return '#10212B';
   }
   return '#FFFFFF';

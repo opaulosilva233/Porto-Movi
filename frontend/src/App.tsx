@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BusFront, Clock3, Crosshair, MapPin, Moon, Navigation, RefreshCw, Route, Search, Star, Sun, X } from 'lucide-react';
+import { BusFront, TrainFront, Clock3, Crosshair, MapPin, Moon, Navigation, RefreshCw, Route, Search, Star, Sun, X } from 'lucide-react';
 import TransitMap, { type MapFit, type MapFocus, type MapViewState } from './components/TransitMap';
-import { getPatternRoute, getShapes, getStopArrivals, getStopSchedule, getStops, getVehicles } from './services/transit';
+import MetroStopPanel from './components/MetroStopPanel';
+import { getUnirRoute, getUnirRoutes, getMetroRoutes, getPatternRoute, getShapes, getStopArrivals, getStopSchedule, getStops, getVehicles } from './services/transit';
 import type { ArrivalsPayload, PatternRoutePayload, ScheduleItem, StopInfo, Vehicle } from './types';
 import { agoLabel, lineColor, lineTextColor } from './utils/stcp';
+import { getMetroDepartures, type MetroDepartures } from './services/transit';
 
 const REFRESH_MS = 15_000;
 
@@ -49,7 +51,15 @@ function etaLabel(seconds: number, atStop: boolean): string {
 }
 
 export default function App() {
-  const [mode, setMode] = useState<'buses' | 'stops'>('buses');
+  const [operator, setOperator] = useState<'stcp' | 'metro' | 'unir'>('stcp');
+  return <TransitView key={operator} operator={operator} onOperatorChange={setOperator} />;
+}
+
+function TransitView({ operator, onOperatorChange }: { operator: 'stcp' | 'metro' | 'unir'; onOperatorChange: (value: 'stcp' | 'metro' | 'unir') => void }) {
+  const isMetro = operator === 'metro';
+  const isScheduled = operator !== 'stcp';
+  const favoritesKey = operator === 'stcp' ? 'porto-movi:favorite-stops' : 'porto-movi:' + operator + '-favorite-stops';
+  const [mode, setMode] = useState<'buses' | 'stops'>(isMetro ? 'stops' : 'buses');
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [stops, setStops] = useState<StopInfo[]>([]);
   const [selected, setSelected] = useState<Vehicle | null>(null);
@@ -57,6 +67,7 @@ export default function App() {
   const [selectedLine, setSelectedLine] = useState<string | null>(null);
   const [arrivals, setArrivals] = useState<ArrivalsPayload | null>(null);
   const [schedule, setSchedule] = useState<ScheduleItem[] | null>(null);
+  const [scheduleAvailable, setScheduleAvailable] = useState(true);
   const [stopLoading, setStopLoading] = useState(false);
   const [query, setQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
@@ -70,11 +81,14 @@ export default function App() {
   const [fit, setFit] = useState<MapFit | null>(null);
   const [routeShapes, setRouteShapes] = useState<Record<string, Array<[number, number]>>>({});
   const [routeContext, setRouteContext] = useState<PatternRoutePayload | null>(null);
+  const [metroRoutes, setMetroRoutes] = useState<PatternRoutePayload[]>([]);
+  const [routeError, setRouteError] = useState(false);
+  const [metroDepartures, setMetroDepartures] = useState<MetroDepartures | null>(null);
   const [userPosition, setUserPosition] = useState<{ lat: number; lon: number } | null>(null);
   const [locating, setLocating] = useState(false);
   const [favoriteIds, setFavoriteIds] = useState<string[]>(() => {
     try {
-      const value = JSON.parse(localStorage.getItem('porto-movi:favorite-stops') ?? '[]');
+      const value = JSON.parse(localStorage.getItem(favoritesKey) ?? '[]');
       return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
     } catch {
       return [];
@@ -84,6 +98,7 @@ export default function App() {
   const viewBeforeSelectionRef = useRef<MapViewState | null>(null);
   const requestedShapesRef = useRef(new Set<string>());
   const selectedStopRef = useRef<StopInfo | null>(null);
+  const stopsLoadedRef = useRef(false);
   selectedStopRef.current = selectedStop;
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     const saved = localStorage.getItem('porto-movi:theme');
@@ -91,9 +106,48 @@ export default function App() {
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   });
 
+  const metroStopId = isMetro ? selectedStop?.id : undefined;
+  useEffect(() => {
+    if (!metroStopId) return;
+    let disposed = false;
+    let timer: number;
+    const update = async () => {
+      try {
+        const result = await getMetroDepartures(metroStopId);
+        if (!disposed) setMetroDepartures(result);
+      } catch {
+        if (!disposed) setMetroDepartures({ available: false, departures: [], checkedAt: new Date().toISOString() });
+      } finally {
+        if (!disposed) timer = window.setTimeout(() => void update(), REFRESH_MS);
+      }
+    };
+    void update();
+    return () => { disposed = true; window.clearTimeout(timer); };
+  }, [metroStopId]);
+
+  const departuresFresh = metroDepartures?.available && clock - new Date(metroDepartures.checkedAt).getTime() < 60_000;
+  const liveDepartures = departuresFresh ? metroDepartures.departures.filter((item) => new Date(item.departureAt).getTime() >= clock - 30_000) : [];
+  const hasRealtime = liveDepartures.some((item) => item.realtime);
+
   const refresh = useCallback(async (manual = false) => {
     if (manual) setRefreshing(true);
     try {
+      if (isScheduled) {
+        if (operator !== 'unir' || !stopsLoadedRef.current || manual) {
+          setStops(await getStops(undefined, operator));
+          stopsLoadedRef.current = true;
+        }
+        const stopId = selectedStopRef.current?.id;
+        if (stopId) {
+          const result = await getStopSchedule(stopId, operator);
+          if (selectedStopRef.current?.id === stopId) {
+            setSchedule(result.schedule);
+            setScheduleAvailable(result.available !== false);
+          }
+        }
+        setError(null);
+        return;
+      }
       const result = await getVehicles();
       setVehicles(result.payload.vehicles);
       setUpdatedAt(result.payload.updatedAt);
@@ -110,15 +164,15 @@ export default function App() {
       setLoading(false);
       if (manual) window.setTimeout(() => setRefreshing(false), 450);
     }
-  }, []);
+  }, [isScheduled, operator]);
 
   useEffect(() => {
-    void getStops().then(setStops).catch(() => setError('Não foi possível carregar as paragens STCP.'));
+    if (!isScheduled) void getStops().then(setStops).catch(() => setError('Não foi possível carregar as paragens STCP.'));
     void refresh();
     const refreshTimer = window.setInterval(() => void refresh(), REFRESH_MS);
     const clockTimer = window.setInterval(() => setClock(Date.now()), 1000);
     return () => { window.clearInterval(refreshTimer); window.clearInterval(clockTimer); };
-  }, [refresh]);
+  }, [refresh, isScheduled]);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -126,8 +180,8 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    localStorage.setItem('porto-movi:favorite-stops', JSON.stringify(favoriteIds));
-  }, [favoriteIds]);
+    localStorage.setItem(favoritesKey, JSON.stringify(favoriteIds));
+  }, [favoriteIds, favoritesKey]);
 
   useEffect(() => {
     const missing = [...new Set(vehicles.map((vehicle) => vehicle.shapeId).filter((id): id is string => Boolean(id)))]
@@ -145,10 +199,11 @@ export default function App() {
 
   const lines = useMemo(() => {
     const counts = new Map<string, number>();
-    vehicles.forEach((vehicle) => counts.set(vehicle.line, (counts.get(vehicle.line) ?? 0) + 1));
+    if (isScheduled) stops.forEach((stop) => stop.lines?.forEach((line) => counts.set(line, (counts.get(line) ?? 0) + 1)));
+    else vehicles.forEach((vehicle) => counts.set(vehicle.line, (counts.get(vehicle.line) ?? 0) + 1));
     return [...counts.entries()].map(([id, count]) => ({ id, count }))
       .sort((a, b) => a.id.localeCompare(b.id, 'pt', { numeric: true }));
-  }, [vehicles]);
+  }, [vehicles, stops, isScheduled]);
 
   const searchLines = useMemo(() => {
     const term = normalize(query);
@@ -158,7 +213,7 @@ export default function App() {
   const searchStops = useMemo(() => {
     const term = normalize(query);
     const results = term
-      ? stops.filter((stop) => normalize(stop.name).includes(term) || normalize(stop.code).includes(term) || normalize(stop.id).includes(term))
+      ? stops.filter((stop) => normalize(stop.name).includes(term) || normalize(stop.code).includes(term) || normalize(stop.id).includes(term) || stop.lines?.some((line) => normalize(line) === term))
       : stops;
     return results.slice(0, 30);
   }, [query, stops]);
@@ -211,39 +266,82 @@ export default function App() {
   }, [mode, selected, selectedStop]);
 
   const chooseLine = useCallback((line: string) => {
-    setMode('buses');
+    if (isMetro) {
+      setQuery(line);
+      setSearchOpen(true);
+      return;
+    }
+    setMode(operator === 'unir' ? 'stops' : 'buses');
     setSelectedLine(line);
     setSelected(null);
     setSelectedStop(null);
+    selectedStopRef.current = null;
     setRouteContext(null);
     setSearchOpen(false);
     setQuery('');
-    const buses = vehicles.filter((vehicle) => vehicle.line === line);
+    const buses = operator === 'unir' ? stops.filter((stop) => stop.lines?.includes(line)) : vehicles.filter((vehicle) => vehicle.line === line);
     setFit({ points: buses.map((vehicle) => [vehicle.lat, vehicle.lon]), key: Date.now() });
-  }, [vehicles]);
+  }, [vehicles, stops, operator, isMetro]);
 
   const chooseStop = useCallback((stop: StopInfo) => {
+    if (selectedStop?.id !== stop.id) setMetroDepartures(null);
+    setMetroRoutes([]);
+    setRouteError(false);
     if (!selected && !selectedStop) viewBeforeSelectionRef.current = currentViewRef.current;
     setMode('stops');
     setSelected(null);
     setSelectedLine(null);
     setSelectedStop(stop);
+    selectedStopRef.current = stop;
     setRouteContext(null);
     setArrivals(null);
     setSchedule(null);
+    setScheduleAvailable(true);
     setStopLoading(true);
     setSearchOpen(false);
     setQuery('');
     setFit(null);
     setFocus({ lat: stop.lat, lon: stop.lon, zoom: 17, key: Date.now() });
-    void Promise.all([getStopArrivals(stop.id), getStopSchedule(stop.id)])
+    if (isScheduled) {
+      void (operator === 'unir' ? getUnirRoutes(stop.id) : getMetroRoutes(stop.id)).then((routes) => {
+        if (selectedStopRef.current?.id !== stop.id) return;
+        setMetroRoutes(routes);
+        const route = routes[0];
+        if (route && route.path.length > 0) {
+          setRouteContext(route);
+          setFocus(null);
+          setFit({ points: route.path, key: Date.now() });
+        } else if (isMetro) setRouteError(true);
+      }).catch(() => { if (selectedStopRef.current?.id === stop.id) setRouteError(true); });
+    }
+    void Promise.all([isScheduled ? Promise.resolve(null) : getStopArrivals(stop.id), getStopSchedule(stop.id, operator)])
       .then(([nextArrivals, nextSchedule]) => {
+        if (selectedStopRef.current?.id !== stop.id) return;
         setArrivals(nextArrivals);
         setSchedule(nextSchedule.schedule);
+        setScheduleAvailable(nextSchedule.available !== false);
+        setError(null);
       })
-      .catch(() => setError('Não foi possível carregar a informação desta paragem.'))
-      .finally(() => setStopLoading(false));
-  }, [selected, selectedStop]);
+      .catch(() => { if (selectedStopRef.current?.id === stop.id) setError('Não foi possível carregar os horários. Tenta atualizar.'); })
+      .finally(() => { if (selectedStopRef.current?.id === stop.id) setStopLoading(false); });
+  }, [selected, selectedStop, isMetro, isScheduled, operator]);
+
+  const unirRouteRequest = useRef(0);
+  useEffect(() => () => { unirRouteRequest.current++; }, []);
+  const chooseUnirRoute = async (trip: string) => {
+    const request = ++unirRouteRequest.current;
+    const stopId = selectedStopRef.current?.id;
+    setRouteError(false);
+    try {
+      const route = await getUnirRoute(trip);
+      if (request !== unirRouteRequest.current || stopId !== selectedStopRef.current?.id) return;
+      setRouteContext(route);
+      setFocus(null);
+      setFit({ points: route.path, key: Date.now() });
+    } catch {
+      if (request === unirRouteRequest.current && stopId === selectedStopRef.current?.id) setRouteError(true);
+    }
+  };
 
   const showWholeLine = useCallback((line: string) => {
     if (routeContext?.line === line && routeContext.path.length > 1) {
@@ -256,6 +354,7 @@ export default function App() {
   }, [routeContext, vehicles]);
 
   const closeSelection = useCallback(() => {
+    selectedStopRef.current = null;
     setSelected(null);
     setSelectedStop(null);
     setSelectedLine(null);
@@ -296,6 +395,8 @@ export default function App() {
   }, []);
 
   const changeMode = (nextMode: 'buses' | 'stops') => {
+    selectedStopRef.current = null;
+    unirRouteRequest.current++;
     setMode(nextMode);
     setSelected(null);
     setSelectedStop(null);
@@ -308,8 +409,9 @@ export default function App() {
   return (
     <main className="fixed inset-0 overflow-hidden bg-zinc-100 text-zinc-950 dark:bg-[#08101c] dark:text-white">
       <TransitMap
+        operator={operator}
         vehicles={mapVehicles}
-        stops={stops}
+        stops={operator === 'unir' && selectedLine ? stops.filter((stop) => stop.lines?.includes(selectedLine)) : stops}
         mode={mode}
         showOnlySelectedStop={Boolean(selected && selectedStop)}
         selectedId={selected?.id ?? null}
@@ -330,20 +432,22 @@ export default function App() {
       <header className="pointer-events-none absolute inset-x-0 top-0 z-[500] px-3 pt-[max(12px,env(safe-area-inset-top))] sm:px-5">
         <div className="pointer-events-auto mx-auto flex max-w-xl items-center gap-2 rounded-[22px] border border-white/70 bg-white/95 p-2 shadow-[0_10px_35px_rgba(15,23,42,.16)] backdrop-blur-xl dark:border-white/10 dark:bg-[#101827]/95">
           <button className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl px-2 py-1.5 text-left" onClick={() => setSearchOpen(true)}>
-            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-[#005BAC] text-white shadow-lg shadow-blue-700/20"><BusFront size={21} /></span>
-            <span className="min-w-0"><strong className="block truncate text-[15px] font-extrabold tracking-tight">Porto Movi</strong><span className="block truncate text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">{mode === 'buses' ? 'Autocarros em tempo real' : `${stops.length} paragens STCP`}</span></span>
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-[#005BAC] text-white shadow-lg shadow-blue-700/20">{isMetro ? <TrainFront size={21} /> : <BusFront size={21} />}</span>
+            <span className="min-w-0"><strong className="block truncate text-[15px] font-extrabold tracking-tight">Porto Movi</strong><span className="block truncate text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">{isMetro ? 'Metro do Porto · Horários' : mode === 'buses' ? (operator === 'unir' ? 'UNIR · GPS indisponível' : 'Autocarros em tempo real') : `${stops.length} paragens ${operator.toUpperCase()}`}</span></span>
           </button>
           <button className="icon-button" aria-label="Pesquisar linha ou paragem" onClick={() => setSearchOpen(true)}><Search size={19} /></button>
           <button className="icon-button" aria-label="Alternar tema" onClick={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={19} /> : <Moon size={19} />}</button>
         </div>
         <div className="pointer-events-auto mx-auto mt-2 flex w-fit rounded-2xl border border-white/70 bg-white/95 p-1 shadow-lg backdrop-blur-xl dark:border-white/10 dark:bg-[#101827]/95">
-          <button onClick={() => changeMode('buses')} className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-[11px] font-extrabold transition ${mode === 'buses' ? 'bg-[#005BAC] text-white' : 'text-zinc-500 dark:text-zinc-300'}`}><BusFront size={14} /> Autocarros</button>
-          <button onClick={() => changeMode('stops')} className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-[11px] font-extrabold transition ${mode === 'stops' ? 'bg-[#005BAC] text-white' : 'text-zinc-500 dark:text-zinc-300'}`}><MapPin size={14} /> Paragens</button>
+          <button aria-pressed={operator === 'stcp' && mode === 'buses'} onClick={() => operator !== 'stcp' ? onOperatorChange('stcp') : changeMode('buses')} className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-[11px] font-extrabold transition ${operator === 'stcp' && mode === 'buses' ? 'bg-[#005BAC] text-white' : 'text-zinc-500 dark:text-zinc-300'}`}><BusFront size={14} /> STCP</button>
+          {!isMetro && <button aria-pressed={mode === 'stops'} onClick={() => changeMode('stops')} className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-[11px] font-extrabold transition ${mode === 'stops' ? 'bg-[#005BAC] text-white' : 'text-zinc-500 dark:text-zinc-300'}`}><MapPin size={14} /> Paragens</button>}
+          <button aria-pressed={operator === 'unir' && mode === 'buses'} onClick={() => operator !== 'unir' ? onOperatorChange('unir') : changeMode('buses')} className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-[11px] font-extrabold ${operator === 'unir' && mode === 'buses' ? 'bg-[#005BAC] text-white' : 'text-zinc-500 dark:text-zinc-300'}`}><BusFront size={14} /> UNIR</button>
+          <button aria-pressed={isMetro} onClick={() => onOperatorChange('metro')} className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-[11px] font-extrabold transition ${isMetro ? 'bg-[#005BAC] text-white' : 'text-zinc-500 dark:text-zinc-300'}`}><TrainFront size={14} /> Metro</button>
         </div>
       </header>
 
       <div className="pointer-events-none absolute inset-x-0 top-[137px] z-[490] flex justify-center px-4 pt-[env(safe-area-inset-top)]">
-        {loading ? <div className="status-pill"><RefreshCw className="animate-spin" size={12} /> A ligar à rede STCP</div> : error ? <button className="pointer-events-auto status-pill !bg-rose-600 !text-white" onClick={() => void refresh(true)}>{error}</button> : <div className="status-pill"><i className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> {vehicles.length} em circulação · {agoLabel(updatedSeconds)}</div>}
+        {loading ? <div className="status-pill"><RefreshCw className="animate-spin" size={12} /> A ligar à rede {operator.toUpperCase()}</div> : error ? <button className="pointer-events-auto status-pill !bg-rose-600 !text-white" onClick={() => void refresh(true)}>{error}</button> : isScheduled ? <div className="status-pill"><Clock3 size={12} /> {stops.length} {isMetro ? 'estações' : 'paragens'} · {hasRealtime ? 'Chegadas em tempo real' : 'Horários programados'}</div> : <div className="status-pill"><i className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> {vehicles.length} em circulação · {agoLabel(updatedSeconds)}</div>}
       </div>
 
       <div className="absolute right-3 z-[500] flex flex-col gap-2 sm:right-5" style={{ bottom: selected ? 286 : selectedStop ? 'calc(min(42vh, 390px) + 24px)' : mode === 'stops' ? 210 : 76 }}>
@@ -372,18 +476,22 @@ export default function App() {
         </section>
       )}
 
-      {selectedStop && !selected && (
+
+      {isMetro && selectedStop && !selected && <MetroStopPanel key={selectedStop.id} stop={selectedStop} routes={metroRoutes} route={routeContext} routeError={routeError} departures={metroDepartures} clock={clock} schedule={schedule} loading={stopLoading} scheduleAvailable={scheduleAvailable} favorite={favoriteIds.includes(selectedStop.id)} onFavorite={() => setFavoriteIds((current) => current.includes(selectedStop.id) ? current.filter((id) => id !== selectedStop.id) : [...current, selectedStop.id])} onClose={closeSelection} onRoute={(route) => { setRouteContext(route); setFocus(null); setFit({ points: route.path, key: Date.now() }); }} />}
+
+      {!isMetro && selectedStop && !selected && (
         <section className="stop-panel absolute inset-x-3 bottom-3 z-[520] mx-auto max-h-[42vh] max-w-md overflow-y-auto rounded-[22px] border border-black/5 bg-white p-3 shadow-2xl dark:border-white/10 dark:bg-[#101725]">
           <div className="sticky top-0 z-10 flex items-center gap-3 bg-white pb-2 dark:bg-[#101725]">
             <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[#005BAC] text-white shadow-sm"><MapPin size={21} /></span>
-            <div className="min-w-0 flex-1"><p className="text-[9px] font-extrabold uppercase tracking-[.14em] text-zinc-400">Paragem {selectedStop.code}</p><h2 className="truncate text-[15px] font-extrabold">{selectedStop.name}</h2><p className="mt-0.5 text-[10px] font-semibold text-zinc-400">{arrivals?.arrivals.length ?? 0} autocarro{arrivals?.arrivals.length === 1 ? '' : 's'} em aproximação</p></div>
+            <div className="min-w-0 flex-1"><p className="text-[9px] font-extrabold uppercase tracking-[.14em] text-zinc-400">{isMetro ? 'Estação' : 'Paragem'} {selectedStop.code}</p><h2 className="truncate text-[15px] font-extrabold">{selectedStop.name}</h2><p className="mt-0.5 text-[10px] font-semibold text-zinc-400">{operator === 'unir' ? 'Chegadas em tempo real indisponíveis' : (arrivals?.arrivals.length ?? 0) + ' autocarros em aproximação'}</p></div>
             <button className={`icon-button !h-9 !w-9 ${favoriteIds.includes(selectedStop.id) ? '!bg-amber-100 !text-amber-500 dark:!bg-amber-400/15' : ''}`} aria-label="Adicionar ou remover favorita" onClick={() => setFavoriteIds((current) => current.includes(selectedStop.id) ? current.filter((id) => id !== selectedStop.id) : [...current, selectedStop.id])}><Star size={16} className={favoriteIds.includes(selectedStop.id) ? 'fill-current' : ''} /></button>
             <button className="icon-button !h-9 !w-9" aria-label="Fechar paragem" onClick={closeSelection}><X size={17} /></button>
           </div>
 
-          <div className="mt-1">
-            <div className="mb-2 flex items-center justify-between"><h3 className="text-[10px] font-extrabold uppercase tracking-[.14em] text-zinc-400">A chegar agora</h3><span className="flex items-center gap-1 text-[10px] font-bold text-emerald-600"><i className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> GPS em tempo real</span></div>
+          {!isMetro && <div className="mt-1">
+            <div className="mb-2 flex items-center justify-between"><h3 className="text-[10px] font-extrabold uppercase tracking-[.14em] text-zinc-400">A chegar agora</h3><span className="flex items-center gap-1 text-[10px] font-bold text-emerald-600"><i className={`h-1.5 w-1.5 rounded-full ${operator === 'unir' ? 'bg-zinc-400' : 'bg-emerald-500'}`} /> {operator === 'unir' ? 'GPS indisponível' : 'GPS em tempo real'}</span></div>
             {stopLoading && <div className="h-14 animate-pulse rounded-2xl bg-zinc-100 dark:bg-white/5" />}
+            {operator === 'unir' && <p className="rounded-2xl border border-dashed border-zinc-200 p-3 text-[12px] font-semibold text-zinc-500 dark:border-white/10 dark:text-zinc-400">As posições e chegadas em tempo real da UNIR ainda não estão disponíveis nesta aplicação.</p>}
             {!stopLoading && arrivals?.arrivals.length === 0 && <p className="rounded-2xl border border-dashed border-zinc-200 p-3 text-[12px] font-semibold text-zinc-500 dark:border-white/10 dark:text-zinc-400">Sem veículos reportados em aproximação neste momento.</p>}
             <div className="space-y-2">
               {arrivals?.arrivals.map((arrival) => (
@@ -396,9 +504,12 @@ export default function App() {
             </div>
           </div>
 
+          }
           <div className="mt-4">
             <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-[.14em] text-zinc-400"><Clock3 size={12} /> Horário programado — hoje</h3>
-            {!stopLoading && schedule?.length === 0 && <p className="text-[12px] font-semibold text-zinc-400">Sem partidas programadas para hoje.</p>}
+            {isMetro && stopLoading && <div className="h-14 animate-pulse rounded-2xl bg-zinc-100 dark:bg-white/5" />}
+            {!stopLoading && !scheduleAvailable && <p className="text-[12px] font-semibold text-amber-600">Os horários disponíveis não abrangem a data de hoje. Aguarda a atualização do calendário.</p>}
+            {!stopLoading && scheduleAvailable && schedule?.length === 0 && <p className="text-[12px] font-semibold text-zinc-400">Sem mais partidas programadas para hoje.</p>}
             <div className="space-y-1.5">
               {schedule?.map((item) => (
                 <div key={`${item.line}-${item.directionId}-${item.headsign}`} className="flex items-center gap-2 rounded-xl bg-zinc-100 px-2.5 py-2 dark:bg-white/5">
@@ -408,22 +519,29 @@ export default function App() {
                 </div>
               ))}
             </div>
+            {operator === 'unir' && metroRoutes.length > 0 && <div className="mb-3">
+              <p className="mb-2 text-[10px] font-extrabold uppercase tracking-wide text-zinc-400">Percurso completo · escolhe a linha</p>
+              <div className="no-scrollbar flex gap-2 overflow-x-auto">{metroRoutes.map((route) => <button key={route.pattern} aria-pressed={routeContext?.pattern === route.pattern} onClick={() => void chooseUnirRoute(route.pattern)} className="flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-extrabold" style={{ backgroundColor: lineColor(route.line), color: lineTextColor(route.line) }}><Route size={13} /> {route.line} → {route.headsign}</button>)}</div>
+            </div>}
+            {operator === 'unir' && routeError && <p className="mb-2 text-xs text-amber-600">Percurso indisponível. Volta a escolher uma linha.</p>}
           </div>
         </section>
       )}
+
+      {operator === 'unir' && mode === 'buses' && <div className="absolute inset-x-3 top-[185px] z-[490] mx-auto max-w-md rounded-2xl bg-white/95 p-3 text-center text-xs font-semibold text-zinc-500 shadow-lg dark:bg-[#101725]/95 dark:text-zinc-300">Posições GPS da UNIR indisponíveis. Seleciona Paragens ou uma linha para consultar horários e percursos.</div>}
 
       {mode === 'buses' && !selectedStop && (
         <section className="absolute inset-x-2 bottom-2 z-[500] h-14 overflow-hidden rounded-2xl border border-black/5 bg-white/95 px-2 shadow-xl backdrop-blur-lg dark:border-white/10 dark:bg-[#101725]/95">
           <div className="flex h-full items-center gap-2"><span className="hidden shrink-0 pl-2 text-[11px] font-extrabold text-zinc-500 sm:block">Filtrar por:</span><div className="no-scrollbar flex min-w-0 flex-1 gap-1.5 overflow-x-auto py-2">
             <button className={`shrink-0 rounded-full px-3 py-1.5 text-[11px] font-extrabold ${selectedLine === null ? 'bg-zinc-800 text-white dark:bg-white dark:text-zinc-900' : 'bg-zinc-100 text-zinc-600 dark:bg-white/10 dark:text-zinc-300'}`} onClick={() => { setSelected(null); setSelectedLine(null); setFit(null); }}>Todas</button>
             {lines.map((line) => <button key={line.id} className={`shrink-0 rounded-full px-3 py-1.5 text-[11px] font-black shadow-sm active:scale-95 ${selectedLine === line.id ? 'ring-2 ring-white ring-offset-2 ring-offset-zinc-400' : ''}`} style={{ backgroundColor: lineColor(line.id), color: lineTextColor(line.id) }} onClick={() => chooseLine(line.id)}>{line.id}</button>)}
-          </div><span className="pr-1 text-[10px] font-bold text-zinc-400">{visibleVehicles.length}</span></div>
+          </div><span className="pr-1 text-[10px] font-bold text-zinc-400">{operator === 'unir' ? '—' : visibleVehicles.length}</span></div>
         </section>
       )}
 
       {mode === 'stops' && !selectedStop && (
         <section className="absolute inset-x-2 bottom-2 z-[500] mx-auto max-w-md rounded-[22px] border border-black/5 bg-white/95 p-3 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#101725]/95">
-          <div className="flex items-center justify-between"><div><h2 className="text-sm font-extrabold">Paragens perto de ti</h2><p className="text-[10px] font-semibold text-zinc-400">Seleciona uma paragem no mapa ou na lista</p></div><button className="icon-button !h-9 !w-9" onClick={locate} aria-label="Encontrar paragens próximas"><Crosshair size={16} /></button></div>
+          <div className="flex items-center justify-between"><div><h2 className="text-sm font-extrabold">{isMetro ? 'Estações perto de ti' : 'Paragens perto de ti'}</h2><p className="text-[10px] font-semibold text-zinc-400">{isMetro ? 'Seleciona uma estação no mapa ou na pesquisa' : 'Seleciona uma paragem no mapa ou na lista'}</p></div><button className="icon-button !h-9 !w-9" onClick={locate} aria-label="Encontrar paragens próximas"><Crosshair size={16} /></button></div>
           {favoriteStops.length > 0 && <div className="no-scrollbar mt-2 flex gap-1.5 overflow-x-auto">{favoriteStops.map((stop) => <button key={stop.id} onClick={() => chooseStop(stop)} className="flex shrink-0 items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1.5 text-[10px] font-extrabold text-amber-800 dark:bg-amber-400/10 dark:text-amber-300"><Star size={10} className="fill-current" /> {stop.name}</button>)}</div>}
           {nearbyStops.length > 0 ? <div className="no-scrollbar mt-2 flex gap-2 overflow-x-auto">{nearbyStops.map(({ stop, distance }) => <button key={stop.id} onClick={() => chooseStop(stop)} className="min-w-[160px] rounded-xl bg-zinc-100 px-3 py-2 text-left dark:bg-white/5"><strong className="block truncate text-[11px]">{stop.name}</strong><small className="font-mono text-[9px] text-zinc-400">{stop.code} · {distanceLabel(distance)}</small></button>)}</div> : <button onClick={locate} className="mt-2 w-full rounded-xl bg-blue-50 py-2 text-[11px] font-extrabold text-[#005BAC] dark:bg-blue-500/10">Ativar localização para ver as mais próximas</button>}
         </section>
@@ -432,10 +550,10 @@ export default function App() {
       {searchOpen && (
         <div className="absolute inset-0 z-[1000] overflow-y-auto bg-zinc-100/98 px-4 pb-10 pt-[max(18px,env(safe-area-inset-top))] backdrop-blur-xl dark:bg-[#08101c]/98">
           <div className="mx-auto min-h-full max-w-xl">
-            <div className="flex items-center gap-2"><label className="flex h-14 flex-1 items-center gap-3 rounded-2xl bg-white px-4 shadow-sm dark:bg-white/10"><Search className="text-[#005BAC]" size={20} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Linha, paragem ou código" className="min-w-0 flex-1 bg-transparent text-base font-bold outline-none placeholder:text-zinc-400" />{query && <button aria-label="Limpar pesquisa" onClick={() => setQuery('')}><X size={18} /></button>}</label><button className="icon-button !h-14 !w-14 !bg-white dark:!bg-white/10" aria-label="Fechar pesquisa" onClick={() => setSearchOpen(false)}><X size={21} /></button></div>
-            <p className="mb-3 mt-6 text-xs font-extrabold uppercase tracking-[.14em] text-zinc-400">Linhas</p>
-            <div className="no-scrollbar flex gap-2 overflow-x-auto">{searchLines.slice(0, 20).map((line) => <button key={line.id} className="flex shrink-0 items-center gap-2 rounded-2xl bg-white p-2.5 shadow-sm dark:bg-white/10" onClick={() => chooseLine(line.id)}><span className="grid h-10 min-w-11 place-items-center rounded-xl font-black" style={{ backgroundColor: lineColor(line.id), color: lineTextColor(line.id) }}>{line.id}</span><small className="pr-1 text-zinc-500">{line.count} ativos</small></button>)}</div>
-            <p className="mb-3 mt-6 text-xs font-extrabold uppercase tracking-[.14em] text-zinc-400">Paragens</p>
+            <div className="flex items-center gap-2"><label className="flex h-14 flex-1 items-center gap-3 rounded-2xl bg-white px-4 shadow-sm dark:bg-white/10"><Search className="text-[#005BAC]" size={20} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={isMetro ? 'Linha, estação ou código' : 'Linha, paragem ou código'} className="min-w-0 flex-1 bg-transparent text-base font-bold outline-none placeholder:text-zinc-400" />{query && <button aria-label="Limpar pesquisa" onClick={() => setQuery('')}><X size={18} /></button>}</label><button className="icon-button !h-14 !w-14 !bg-white dark:!bg-white/10" aria-label="Fechar pesquisa" onClick={() => setSearchOpen(false)}><X size={21} /></button></div>
+            <p className="mb-3 mt-6 text-xs font-extrabold uppercase tracking-[.14em] text-zinc-400">{isMetro ? 'Metro do Porto' : 'Linhas'}</p>
+            <div className="no-scrollbar flex gap-2 overflow-x-auto">{searchLines.slice(0, 20).map((line) => <button key={line.id} className="flex shrink-0 items-center gap-2 rounded-2xl bg-white p-2.5 shadow-sm dark:bg-white/10" onClick={() => chooseLine(line.id)}><span className="grid h-10 min-w-11 place-items-center rounded-xl font-black" style={{ backgroundColor: lineColor(line.id), color: lineTextColor(line.id) }}>{line.id}</span><small className="pr-1 text-zinc-500">{line.count} {isScheduled ? (isMetro ? 'estações' : 'paragens') : 'ativos'}</small></button>)}</div>
+            <p className="mb-3 mt-6 text-xs font-extrabold uppercase tracking-[.14em] text-zinc-400">{isMetro ? 'Estações' : 'Paragens'}</p>
             <div className="space-y-2">{searchStops.map((stop) => <button key={stop.id} onClick={() => chooseStop(stop)} className="flex w-full items-center gap-3 rounded-2xl bg-white p-3 text-left shadow-sm active:scale-[.99] dark:bg-white/10"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-blue-50 text-[#005BAC] dark:bg-blue-500/15"><MapPin size={17} /></span><span className="min-w-0 flex-1"><strong className="block truncate text-[13px]">{stop.name}</strong><small className="font-mono text-[10px] text-zinc-400">{stop.code}</small></span>{favoriteIds.includes(stop.id) && <Star size={14} className="fill-amber-500 text-amber-500" />}</button>)}</div>
             {query && searchLines.length === 0 && searchStops.length === 0 && <p className="rounded-2xl bg-white p-6 text-center text-sm font-semibold text-zinc-500 dark:bg-white/10">Nenhuma linha ou paragem corresponde à pesquisa.</p>}
           </div>

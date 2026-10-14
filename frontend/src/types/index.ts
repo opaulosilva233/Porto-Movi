@@ -49,6 +49,7 @@ export interface VehiclesPayload {
 }
 
 export interface StopInfo {
+  lines?: string[];
   id: string;
   code: string;
   name: string;
@@ -85,6 +86,7 @@ export interface ScheduleItem {
 }
 
 export interface SchedulePayload {
+  available?: boolean;
   stop: StopInfo;
   date: string;
   schedule: ScheduleItem[];
